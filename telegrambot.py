@@ -286,7 +286,7 @@ async def handle_exchanges(message):
     await send_message("""🔮 $KOIN is supported on the following exchanges
 
 🌁 <b>Bridges</b>:
-<a href="https://dapp.chainge.finance/?fromChain=ETH&toChain=ETH&fromToken=USDT&toToken=KOIN">Chainge</a>
+<a href="https://dapp.chainge.finance/?fromChain=ETH&toChain=KOIN&fromToken=USDT&toToken=KOIN">Chainge</a>
 
 🌐 <b>DEXs</b>:
 <a href="https://app.uniswap.org/explore/tokens/ethereum/0xed11c9bcf69fdd2eefd9fe751bfca32f171d53ae">Uniswap</a>
@@ -295,8 +295,6 @@ async def handle_exchanges(message):
 📈 <b>CEXs</b>:
 <a href="https://www.mexc.com/exchange/KOIN_USDT">MEXC</a>
 <a href="https://bingx.com/en/spot/KOINUSDT/">BingX</a>
-<a href="https://www.biconomy.com/exchange/KOIN_USDT">Biconomy</a>
-<a href="https://www.coinstore.com/#/spot/KOINUSDT">Coinstore</a>
 <a href="https://exchange.lcx.com/trade/KOIN-EUR">LCX</a>
 
 🚨 Exchange Listings are always being pursued! We cannot discuss potential or in progress listings. \
