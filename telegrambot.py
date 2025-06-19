@@ -8,7 +8,6 @@ import requests
 import telebot
 from telebot.async_telebot import AsyncTeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import time
 
 # Configure logging
 logging.basicConfig(
@@ -431,9 +430,10 @@ async def handle_projects_callback(message):
 📊 <a href="https://koinosblocks.com">KoinosBlocks</a> - Block Explorer
 
 💳 <b>Wallets:</b>
-🦊 <a href="https://chrome.google.com/webstore/detail/kondor/ghipkefkpgkladckmlmdnadmcchefhjl">Kondor</a> - Browser Extension
+🦊 <a href="https://chrome.google.com/webstore/detail/kondor/ghipkefkpgkladckmlmdnadmcchefhjl">Kondor</a> - Browser Extension (Suggested)
 📱 <a href="https://konio.io">Konio</a> - Mobile Wallet
 🌐 <a href="https://portal.armana.io">Portal</a> - Web Wallet
+👑 <a href="https://sovrano.io/">Sovrano</a> - Wallet Solution (Suggested)
 
 🤖 <b>AI & Tools:</b>
 🧠 <a href="https://planetkoinos.com/koinos_ai.html">Koinos AI</a> - AI Assistant
@@ -446,15 +446,9 @@ async def handle_exchanges_callback(message):
     """Enhanced exchanges with modern categorization"""
     text = """💱 <b>Trade $KOIN Everywhere</b>
 
-🌐 <b>Decentralized Exchanges:</b>
-🦄 <a href="https://app.uniswap.org/explore/tokens/ethereum/0xed11c9bcf69fdd2eefd9fe751bfca32f171d53ae">Uniswap</a> - Leading DEX
-
 📈 <b>Centralized Exchanges:</b>
 🏪 <a href="https://www.mexc.com/exchange/KOIN_USDT">MEXC</a> - Global Exchange
 ⚡ <a href="https://bingx.com/en/spot/KOINUSDT/">BingX</a> - Crypto Trading
-💼 <a href="https://www.biconomy.com/exchange/KOIN_USDT">Biconomy</a> - Digital Assets
-🏬 <a href="https://www.coinstore.com/#/spot/KOINUSDT">Coinstore</a> - Trading Platform
-🇪🇺 <a href="https://exchange.lcx.com/trade/KOIN-EUR">LCX</a> - European Exchange
 
 🔥 <b>More listings coming soon!</b>
 <i>We're always working on new exchange partnerships</i>
@@ -469,7 +463,7 @@ async def handle_wallets_callback(message):
 
 <i>Choose the perfect wallet for your needs:</i>
 
-🦊 <b>Kondor Wallet</b> - <i>Most Popular</i>
+🦊 <b>Kondor Wallet</b> - <i>Suggested • Active Development</i>
 💻 Browser extension for Chrome & Brave
 👨‍💻 Created by Julian Gonzalez
 🔗 <a href="https://chrome.google.com/webstore/detail/kondor/ghipkefkpgkladckmlmdnadmcchefhjl">Download</a> | <a href="https://github.com/joticajulian/kondor">GitHub</a>
@@ -483,6 +477,9 @@ async def handle_wallets_callback(message):
 🌐 <b>Portal Wallet</b> - <i>Web Based</i>
 🖥️ No installation required
 🔗 <a href="https://portal.armana.io">Access Portal</a>
+
+👑 <b>Sovrano Wallet</b> - <i>Suggested • Active Development</i>
+🔗 <a href="https://sovrano.io/">Visit Sovrano</a>
 
 💎 <b>Tangem Wallet</b> - <i>Hardware Security</i>
 🛡️ Physical card wallet
@@ -741,7 +738,7 @@ async def handle_roadmap(message):
 • Performance optimizations
 • New partnership integrations
 
-⚡ <i>The future of blockchain is being built daily!</i>""")
+⚡ <i>The future of blockchain is being built daily!</i>""", chat_id=message.chat.id)
 
 #Link to price chat and MEXC
 @bot.message_handler(commands=['price'])
