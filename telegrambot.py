@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 import os
 import random
 import requests
-import signal
 import telebot
 from telebot.async_telebot import AsyncTeleBot
 import time
@@ -35,8 +34,7 @@ async def send_message(message, link_preview=False, html=True, chat_id=chat_id, 
         link_preview_options=telebot.types.LinkPreviewOptions(is_disabled=not link_preview),
         reply_markup=reply_markup)
 
-#welcome message
-#@bot.message_handler(commands=['welcome'])
+# welcome message
 @bot.message_handler(content_types=['new_chat_members'])
 async def handle_welcome(message):
     await bot.delete_message(message.chat.id, message.id)
@@ -61,8 +59,8 @@ async def handle_welcome(message):
     async with new_users_lock:
         for member in message.new_chat_members:
             new_users.add(member.id)
-
-            captcha_messages.append(await send_message(f"Welcome @{member.username}, what is the name of this project?", reply_markup=markup))
+            captcha_messages.append(await send_message(
+                f"Welcome @{member.username}, what is the name of this project?", reply_markup=markup))
 
     await asyncio.sleep(180)
     for captcha_message in captcha_messages:
@@ -76,7 +74,6 @@ async def handle_welcome(message):
             if {member.id} <= new_users:
                 new_users.remove(member.id)
                 await kick_user(member)
-
 
 @bot.message_handler(func=lambda message: message.reply_to_message != None)
 async def handle_new_user_response(message):
@@ -95,10 +92,8 @@ async def handle_new_user_response(message):
 
     await welcome_new_users([message.from_user])
 
-
 async def kick_user(user):
-    await bot.kick_chat_member(chat_id, user.id, until_date=datetime.today() + timedelta(days=7) )
-
+    await bot.kick_chat_member(chat_id, user.id, until_date=datetime.today() + timedelta(days=7))
 
 async def welcome_new_users(users):
     programs = get_programs()
@@ -183,12 +178,10 @@ Admins, someone needs to be banned
 @kuixihe @weleleliano @saleh_hawi @fifty2kph
 """)
 
-
 #website
 @bot.message_handler(commands=['website', 'websites'])
 async def send_website(message):
     await send_message('<a href="https://koinos.io">Koinos Website</a>', True)
-
 
 #stake
 @bot.message_handler(commands=['stake'])
@@ -220,14 +213,15 @@ async def send_whitepaper(message):
 ▶️ <a href="https://www.youtube.com/watch?v=v-qFFbDvV2c">Community Member Video</a>
 """)
 
-
 #Get KOIN Virtual Supply
+# (removed koiner reference)
+# If you need an alternative, you must provide another endpoint.
 def get_virtual_supply():
-    url = 'https://checker.koiner.app/koin/virtual-supply'
-    response = requests.get(url)
-    data = response.json()
-    return data
-
+    # url = 'https://checker.koiner.app/koin/virtual-supply'
+    # response = requests.get(url)
+    # data = response.json()
+    # return data
+    return "Unavailable (Koiner removed)"
 
 @bot.message_handler(commands=['supply'])
 async def handle_supply(message):
@@ -236,14 +230,14 @@ async def handle_supply(message):
 
 For more information, read about Koinos' <a href="https://docs.koinos.io/overview/tokenomics/">tokenomics</a>!""")
 
-
 #Get VHP Total Supply
+# (removed koiner reference)
 def get_vhp_supply():
-    url = 'https://checker.koiner.app/vhp/total-supply'
-    response = requests.get(url)
-    data = response.json()
-    return data
-
+    # url = 'https://checker.koiner.app/vhp/total-supply'
+    # response = requests.get(url)
+    # data = response.json()
+    # return data
+    return "Unavailable (Koiner removed)"
 
 @bot.message_handler(commands=['vhpsupply'])
 async def handle_vhp_supply(message):
@@ -251,7 +245,6 @@ async def handle_vhp_supply(message):
     await send_message(f"""The Total Supply of $VHP is: {data}.
 
 For more information, read about Koinos' <a href="https://docs.koinos.io/overview/tokenomics/">tokenomics</a>!""")
-
 
 #link to Koinos Forum Guides#
 @bot.message_handler(commands=['guides', 'docs'])
@@ -263,7 +256,6 @@ async def handle_guides(message):
 
 🔮 <a href="https://docs.koinos.io/overview/mana/">Everything you need to know about Mana</a>
 """)
-
 
 #Link to Various social groups
 @bot.message_handler(commands=['international'])
@@ -280,7 +272,6 @@ async def handle_international(message):
 🇳🇱 <a href="https://t.me/KoinosNederland">Dutch</a>
 """)
 
-
 @bot.message_handler(commands=['exchange','exchanges','cex','buy'])
 async def handle_exchanges(message):
     await send_message("""🔮 $KOIN is supported on the following exchanges
@@ -290,7 +281,6 @@ async def handle_exchanges(message):
 
 🌐 <b>DEXs</b>:
 <a href="https://app.uniswap.org/explore/tokens/ethereum/0xed11c9bcf69fdd2eefd9fe751bfca32f171d53ae">Uniswap</a>
-<a href="https://app.koindx.com/swap">KoinDX</a>
 
 📈 <b>CEXs</b>:
 <a href="https://www.mexc.com/exchange/KOIN_USDT">MEXC</a>
@@ -314,7 +304,6 @@ your Mana recharges over time letting you continue to use Koinos forever!
 <a href="https://docs.koinos.io/overview/mana/">Learn more about Mana!</a>
 """)
 
-
 #Media Links
 @bot.message_handler(commands=['media','social'])
 async def handle_media(message):
@@ -335,7 +324,6 @@ async def handle_media(message):
 Also check out /international for international communities!
 """)
 
-
 #Listing of Koinos Projects
 @bot.message_handler(commands=['projects'])
 async def handle_projects(message):
@@ -343,7 +331,6 @@ async def handle_projects(message):
 🔮 Existing Koinos Projects 🔮
 
 📄 <b>dApps:</b>
-<a href="https://koindx.com">KoinDX</a>
 <a href="https://kollection.app">Kollection</a>
 <a href="https://koincity.com">Koincity</a>
 <a href="https://koinosbox.com/nicknames">Nicknames</a>
@@ -359,7 +346,6 @@ async def handle_projects(message):
 <a href="https://burnkoin.com">Burn Koin</a>
 
 🔍 <b>Block Explorers:</b>
-<a href="https://koiner.app">Koiner</a>
 <a href="https://koinosblocks.com">KoinosBlocks</a>
 
 💳 <b>Wallets:</b>
@@ -371,14 +357,12 @@ async def handle_projects(message):
 <a href="https://planetkoinos.com/koinos_ai.html">Koinos AI</a>
 """)
 
-
 #Link to Koinos Roadmap
 @bot.message_handler(commands=['roadmap'])
 async def handle_roadmap(message):
    await send_message("""
 📍 <a href="https://koinos.io/#roadmap">The official Koinos Network roadmap</a>
 """)
-
 
 #Link to price chat and MEXC
 @bot.message_handler(commands=['price'])
@@ -387,7 +371,6 @@ async def handle_price(message):
 To talk about price, please visit the <a href="https://t.me/thekoinosarmy">Koinos Army Telegram</a>!
 
 💵 Find the price of $KOIN on <a href="https://www.coingecko.com/en/coins/koinos">CoinGecko</a>.""")
-
 
 #Provides information about Koinos Wallets
 @bot.message_handler(commands=['wallets'])
@@ -410,7 +393,6 @@ Created by Adriano Foschi
 📱 Hardware Wallet for iOS & Android
 More secure but less dApp support
 """)
-
 
 #Give Claim Information
 @bot.message_handler(commands=['claim'])
