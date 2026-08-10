@@ -1,0 +1,24 @@
+services:
+  koinbot:
+    build: .
+    image: koinbot:local
+    container_name: koinbot
+    restart: unless-stopped
+    env_file: .env
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 0.5
+    volumes:
+      # Content is mounted so the auto-updater can deploy content-only
+      # merges with a plain restart — no image rebuild needed.
+      - ./content:/app/content:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

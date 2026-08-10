@@ -1,0 +1,108 @@
+# Koinos ecosystem projects — editable via pull request.
+#
+# To ADD A PROJECT: append an entry with id, name, url, category
+# (emoji and tagline are optional).
+#
+# To ADD AN UPDATE for your project: append to its "updates" list:
+#
+#     updates:
+#       - date: 2026-08-10
+#         text: "V2 launched with support for XYZ"
+#
+# date is YYYY-MM-DD (quoted or unquoted); text may use Telegram HTML
+# (<b>, <i>, <a href="...">). Updates appear in /updates (newest
+# first, across all projects) and in /project <name>.
+#
+# Merged PRs go live on the bot within ~2 minutes.
+
+projects:
+  - id: kollection
+    name: Kollection
+    url: https://kollection.app
+    category: dApps & Platforms
+    emoji: 🎨
+    tagline: NFT Marketplace
+
+  - id: koincity
+    name: Koincity
+    url: https://koincity.com
+    category: dApps & Platforms
+    emoji: 🏙️
+    tagline: Virtual World
+
+  - id: nicknames
+    name: Nicknames
+    url: https://koinosbox.com/nicknames
+    category: dApps & Platforms
+    emoji: 📝
+    tagline: Name Service
+
+  - id: kanvas
+    name: Kanvas
+    url: https://kanvas-app.com
+    category: dApps & Platforms
+    emoji: 🖼️
+    tagline: Creative Platform
+
+  - id: koinos-garden
+    name: Koinos Garden
+    url: https://koinosgarden.com
+    category: dApps & Platforms
+    emoji: 🌱
+    tagline: DeFi
+
+  - id: space-striker
+    name: Space Striker
+    url: https://planetkoinos.com/space_striker.html
+    category: Gaming
+    emoji: 🚀
+    tagline: Action Game
+
+  - id: fogata
+    name: Fogata
+    url: https://fogata.io
+    category: Mining & Staking
+    emoji: 🔥
+    tagline: Mining Pool
+
+  - id: burn-koin
+    name: Burn Koin
+    url: https://burnkoin.com
+    category: Mining & Staking
+    emoji: 💎
+    tagline: Staking Pool
+
+  - id: koinosblocks
+    name: KoinosBlocks
+    url: https://koinosblocks.com
+    category: Infrastructure
+    emoji: 📊
+    tagline: Block Explorer
+
+  - id: kondor
+    name: Kondor
+    url: https://chrome.google.com/webstore/detail/kondor/ghipkefkpgkladckmlmdnadmcchefhjl
+    category: Wallets
+    emoji: 🦊
+    tagline: Browser Extension (Suggested)
+
+  - id: portal
+    name: Portal
+    url: https://portal.armana.io
+    category: Wallets
+    emoji: 🌐
+    tagline: Web Wallet
+
+  - id: sovrano
+    name: Sovrano
+    url: https://sovrano.io/
+    category: Wallets
+    emoji: 👑
+    tagline: Wallet Solution (Suggested)
+
+  - id: koinos-ai
+    name: Koinos AI
+    url: https://planetkoinos.com/koinos_ai.html
+    category: AI & Tools
+    emoji: 🧠
+    tagline: AI Assistant

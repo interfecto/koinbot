@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -7,6 +8,8 @@ import random
 import telebot
 from telebot.async_telebot import AsyncTeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+import content
 
 # Configure logging
 logging.basicConfig(
@@ -17,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+# All user-facing text lives in content/*.yml (updated via pull request).
+TEXTS, CONTENT_COMMANDS, MENUS, PROJECTS = content.load()
+
 bot = AsyncTeleBot(os.environ['TELEGRAM_BOT_TOKEN'])
 new_users = set()
 new_users_lock = asyncio.Lock()
@@ -26,35 +32,46 @@ CAPTCHA_TIMEOUT = 180  # 3 minutes
 BAN_DURATION_DAYS = 7
 REQUEST_TIMEOUT = 10
 
+
+def mention(user):
+    """Readable, HTML-safe reference to a user (usernames are optional)."""
+    if user.username:
+        return f'@{user.username}'
+    if user.first_name:
+        return html.escape(user.first_name, quote=False)
+    return f'User{user.id}'
+
+
 def create_main_menu_keyboard():
     """Create a modern inline keyboard for main navigation"""
     keyboard = InlineKeyboardMarkup(row_width=2)
-    
+
     # Row 1: Essential commands
     keyboard.add(
         InlineKeyboardButton("📚 Guides", callback_data="guides"),
         InlineKeyboardButton("🔗 Projects", callback_data="projects")
     )
-    
+
     # Row 2: Trading & Info
     keyboard.add(
         InlineKeyboardButton("💱 Exchanges", callback_data="exchanges"),
         InlineKeyboardButton("💳 Wallets", callback_data="wallets")
     )
-    
+
     # Row 3: Community & Support
     keyboard.add(
         InlineKeyboardButton("🌍 International", callback_data="international"),
         InlineKeyboardButton("📱 Social Media", callback_data="social")
     )
-    
+
     # Row 4: Advanced
     keyboard.add(
         InlineKeyboardButton("🔥 Stake/Burn", callback_data="stake"),
         InlineKeyboardButton("📄 Whitepaper", callback_data="whitepaper")
     )
-    
+
     return keyboard
+
 
 async def send_message(chat_id, message, link_preview=False, html=True, reply_markup=None):
     """Universal message sender that uses the provided chat_id."""
@@ -69,6 +86,7 @@ async def send_message(chat_id, message, link_preview=False, html=True, reply_ma
     except Exception as e:
         logger.error(f"Failed to send message to {chat_id}: {e}")
         return None
+
 
 async def schedule_message_deletion(chat_id, message_id, delay_seconds=60):
     """Schedules a message to be deleted after a specified delay."""
@@ -106,13 +124,13 @@ async def handle_welcome(message):
     async with new_users_lock:
         for member in message.new_chat_members:
             new_users.add(member.id)
-            welcome_text = f"""🎉 <b>Welcome @{member.username}!</b>
+            welcome_text = f"""🎉 <b>Welcome {mention(member)}!</b>
 
 🛡️ <i>Quick security check:</i>
 What is the name of this blockchain project?
 
 ⏰ <i>You have 3 minutes to respond...</i>"""
-            
+
             captcha_msg = await send_message(current_chat_id, welcome_text, reply_markup=markup)
             if captcha_msg:
                 captcha_messages.append(captcha_msg)
@@ -131,6 +149,7 @@ What is the name of this blockchain project?
                 new_users.remove(member.id)
                 await kick_user(current_chat_id, member)
 
+
 @bot.message_handler(commands=['info', 'start', 'menu'])
 async def send_info(message):
     """Displays the main info menu and deletes the user's command."""
@@ -138,100 +157,12 @@ async def send_info(message):
         await bot.delete_message(message.chat.id, message.message_id)
     except Exception as e:
         logger.warning(f"Could not delete command message: {e}")
-        
-    help_text = """🔮 <b>Welcome to Koinos Bot!</b>
 
-🔥 <b>Quick Commands:</b>
-/claim - Token claiming info
-/price - Price discussion rules  
-/supply - Token supply info
-/mana - Learn about Mana
-/roadmap - Development roadmap
-/rules - Community guidelines
-
-💫 <i>Choose an option below to get started!</i>"""
-    
-    sent_message = await send_message(message.chat.id, help_text, reply_markup=create_main_menu_keyboard())
+    sent_message = await send_message(message.chat.id, TEXTS['main_menu'],
+                                      reply_markup=create_main_menu_keyboard())
     if sent_message:
         asyncio.create_task(schedule_message_deletion(sent_message.chat.id, sent_message.message_id))
 
-@bot.message_handler(commands=['mana'])
-async def handle_mana(message):
-    """Provides an explanation of Mana."""
-    await send_message(message.chat.id, """🔮 <b>The Magic of Mana</b>
-
-✨ <b>What is Mana?</b>
-Mana is the secret sauce that makes Koinos special! Every KOIN token contains inherent Mana that powers blockchain transactions.
-
-🎮 <b>Just Like Video Games:</b>
-• Use Mana for transactions
-• Mana regenerates automatically over time  
-• Never run out permanently
-• Use Koinos forever without fees!
-
-⚡ <b>Key Benefits:</b>
-• No transaction fees
-• Sustainable usage model
-• Beginner-friendly experience
-
-🔗 <b>Deep Dive:</b>
-<a href="https://docs.koinos.io/overview/mana/">Complete Mana Guide</a>
-
-💫 <i>Welcome to fee-less blockchain interactions!</i>""")
-
-@bot.message_handler(commands=['rules','guidelines'])
-async def handle_rules(message):
-    """Displays the community guidelines."""
-    await send_message(message.chat.id, """🛡️ <b>Koinos Community Guidelines</b>
-
-<i>Building the future together requires great collaboration!</i>
-
-✅ <b>Encouraged Activities:</b>
-• 🚀 Share your projects and innovations
-• 💡 Discuss features, plans, and ideas
-• 🔄 Provide constructive feedback
-• 🤝 Maintain respectful conversations
-• 🌱 Help grow our ecosystem
-• 📚 Share insights and resources
-
-❌ <b>Please Avoid:</b>
-• 🚫 Promoting non-utility tokens
-• 📈 Price speculation (use @thekoinosarmy)
-• 🗣️ Off-topic discussions
-• 🎭 Disrespectful behavior
-
-🎯 <b>Our Mission:</b>
-Create a positive, innovative environment where everyone can learn, build, and grow together.
-
-📄 <b>Complete Guidelines:</b>
-🔗 <a href="https://docs.google.com/document/d/1-WYFlj7p3U0GG5Q5_OQPR5tzRD4WlG3FKNj4u9Lz3vQ/edit?usp=sharing">Read Full Guidelines</a>
-
-💫 <i>Welcome to our amazing community!</i>""")
-
-@bot.message_handler(commands=['claim'])
-async def handle_claim(message):
-    """Displays information on how to claim tokens."""
-    await send_message(message.chat.id, """🎁 <b>Token Claim Information</b>
-
-⚠️ <b>Eligibility Check:</b>
-✅ Must have held ERC-20 KOIN during the snapshot
-🔍 <a href="https://t.me/koinos_community/109226">Verify Your Address</a>
-
-💳 <b>You'll Need a Koinos Wallet:</b>
-🦊 <a href="https://chrome.google.com/webstore/detail/kondor/ghipkefkpgkladckmlmdnadmcchefhjl">Download Kondor Wallet</a>
-
-🔐 <b>CRITICAL SECURITY WARNING:</b>
-🚨 <b>BACKUP YOUR PRIVATE KEYS/SEED PHRASE!</b>
-🚨 <b>We CANNOT recover lost keys!</b>
-
-📚 <b>Step-by-Step Guides:</b>
-📺 <a href="https://youtu.be/l-5dHGqUSj4">Video Tutorial</a>
-📖 <a href="https://medium.com/@kuixihe/a-complete-guide-to-claiming-koin-tokens-edd20e7d9c40">Written Guide</a>
-
-⏰ <b>No Rush:</b>
-<i>There's no time limit - claim whenever you're ready!</i>
-
-🔒 <i>Security first, claiming second!</i>""")
 
 @bot.message_handler(commands=['report'])
 async def send_report(message):
@@ -241,95 +172,74 @@ async def send_report(message):
 <b>Someone needs attention from moderators:</b>
 @kuixihe @weleleliano @saleh_hawi @fifty2kph
 
-⚠️ <i>Reported by:</i> @{username}
+⚠️ <i>Reported by:</i> {username}
 🕐 <i>Time:</i> {time}""".format(
-        username=message.from_user.username or f"User{message.from_user.id}",
+        username=mention(message.from_user),
         time=datetime.now().strftime("%H:%M:%S")
     )
-    
+
     await send_message(message.chat.id, report_text)
 
-@bot.message_handler(commands=['website', 'websites'])
-async def send_website(message):
-    """Displays a link to the main website."""
-    await send_message(
-        message.chat.id,
-        '🌐 <b><a href="https://koinos.io">Visit Koinos.io</a></b>\n\n'
-        '✨ <i>Discover the future of blockchain technology!</i>', 
-        True
-    )
 
-@bot.message_handler(commands=['supply'])
-async def handle_supply(message):
-    """Displays token supply information."""
-    data = "🔄 <i>Data source updating...</i>"
-    await send_message(message.chat.id, f"""📊 <b>KOIN Virtual Supply</b>
+# --- Projects & Updates (rendered from content/projects.yml) ---
 
-💰 <b>Current Supply:</b> {data}
-<i>(KOIN + VHP combined)</i>
+@bot.message_handler(commands=['projects'])
+async def handle_projects(message):
+    """Lists all ecosystem projects, grouped by category."""
+    await send_message(message.chat.id, content.render_projects_overview(PROJECTS))
 
-📈 <b>Learn More:</b>
-🔗 <a href="https://docs.koinos.io/overview/tokenomics/">Koinos Tokenomics</a>
 
-💡 <i>Virtual supply includes both circulating KOIN and burned VHP tokens</i>""")
+@bot.message_handler(commands=['project'])
+async def handle_project(message):
+    """Shows details and latest updates for a single project."""
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        ids = ', '.join(p['id'] for p in PROJECTS)
+        if len(ids) > 3500:
+            ids = ids[:3500] + '…'
+        await send_message(
+            message.chat.id,
+            f'🔎 <b>Usage:</b> /project &lt;name&gt;\n\n<b>Available:</b> {ids}'
+        )
+        return
+    project = content.find_project(PROJECTS, parts[1])
+    if project is None:
+        safe_query = html.escape(parts[1], quote=False)
+        await send_message(
+            message.chat.id,
+            f'❓ No project found for "{safe_query}". Try /projects for the full list.'
+        )
+        return
+    await send_message(message.chat.id, content.render_project_detail(project))
 
-@bot.message_handler(commands=['vhpsupply'])
-async def handle_vhp_supply(message):
-    """Displays VHP supply information."""
-    data = "🔄 <i>Data source updating...</i>"
-    await send_message(message.chat.id, f"""⚡ <b>VHP Total Supply</b>
 
-🔥 <b>Current VHP Supply:</b> {data}
+@bot.message_handler(commands=['updates'])
+async def handle_updates(message):
+    """Shows the latest updates across all projects."""
+    await send_message(message.chat.id, content.render_updates(PROJECTS))
 
-📈 <b>Learn More:</b>
-🔗 <a href="https://docs.koinos.io/overview/tokenomics/">Koinos Tokenomics</a>
 
-💡 <i>VHP (Virtual Hash Power) is created by burning KOIN tokens</i>""")
+# --- Static commands (defined in content/commands.yml) ---
 
-@bot.message_handler(commands=['roadmap'])
-async def handle_roadmap(message):
-    """Displays a link to the development roadmap."""
-    await send_message(message.chat.id, """🗺️ <b>Koinos Development Roadmap</b>
+def _register_content_commands():
+    for name, cfg in CONTENT_COMMANDS.items():
+        commands = [name, *cfg.get('aliases', [])]
 
-🚀 <b>Track our progress:</b>
-📍 <a href="https://koinos.io/#roadmap">Official Koinos Roadmap</a>
+        async def handler(message, _text=cfg['text'],
+                          _preview=cfg.get('link_preview', False)):
+            await send_message(message.chat.id, _text, link_preview=_preview)
 
-🎯 <b>What's Coming:</b>
-• Enhanced developer tools
-• Ecosystem expansion  
-• Performance optimizations
-• New partnership integrations
+        bot.message_handler(commands=commands)(handler)
 
-⚡ <i>The future of blockchain is being built daily!</i>""")
 
-@bot.message_handler(commands=['price'])
-async def handle_price(message):
-    """Displays price discussion guidelines."""
-    await send_message(message.chat.id, """📈 <b>Price Discussion Guidelines</b>
+_register_content_commands()
 
-🚨 <b>Keep price talk out of this group!</b>
-
-💬 <b>Price Discussions:</b>
-🚀 <a href="https://t.me/thekoinosarmy">Koinos Army Telegram</a>
-
-📊 <b>Live Price Data:</b>
-📈 <a href="https://www.coingecko.com/en/coins/koinos">CoinGecko KOIN Price</a>
-
-💡 <i>This channel focuses on technology, development, and community!</i>""")
-
-@bot.message_handler(commands=['programs'])
-async def handle_programs(message):
-    """Displays a message indicating no active programs."""
-    await send_message(
-        message.chat.id,
-        "✅ <b>No active programs right now.</b>\n\n<i>Check back soon for new initiatives!</i>"
-    )
 
 # --- Menu Redirects ---
-# All commands that are part of the main menu buttons now redirect to the main menu.
+# Commands that are part of the main menu buttons redirect to the main menu.
 @bot.message_handler(commands=[
-    'guides', 'docs', 'international', 'exchange', 'exchanges', 'cex', 
-    'buy', 'media', 'social', 'projects', 'stake', 'whitepaper', 'wallets'
+    'guides', 'docs', 'international', 'exchange', 'exchanges', 'cex',
+    'buy', 'media', 'social', 'stake', 'whitepaper', 'wallets'
 ])
 async def handle_menu_redirects(message):
     """Handles commands that are now buttons in the main menu by showing the menu."""
@@ -338,16 +248,16 @@ async def handle_menu_redirects(message):
 
 # --- Security Handler (Must be last text-based handler) ---
 
-@bot.message_handler(content_types=['text'])  
+@bot.message_handler(content_types=['text'])
 async def handle_text_messages(message):
-    """Handles all text from unverified users, enforcing the captcha."""        
+    """Handles all text from unverified users, enforcing the captcha."""
     async with new_users_lock:
         if message.from_user.id in new_users:
             try:
                 await bot.delete_message(message.chat.id, message.id)
             except:
                 pass
-            
+
             # If the message is a reply to the captcha, handle it
             if message.reply_to_message is not None:
                 await handle_captcha_response(message)
@@ -355,7 +265,7 @@ async def handle_text_messages(message):
                 logger.warning(f"User {message.from_user.username} ({message.from_user.id}) tried to send message before completing captcha")
                 warning_msg = await send_message(
                     message.chat.id,
-                    f"⚠️ <b>@{message.from_user.username}</b>, please complete the security check first!"
+                    f"⚠️ <b>{mention(message.from_user)}</b>, please complete the security check first!"
                 )
                 await asyncio.sleep(3)
                 try:
@@ -363,15 +273,14 @@ async def handle_text_messages(message):
                 except:
                     pass
             return
-    
+
 # --- Helper Functions ---
 
 async def handle_captcha_response(message):
     """Handles the user's response to the captcha question."""
-    async with new_users_lock:
-        if message.from_user.id not in new_users:
-            return
-        new_users.remove(message.from_user.id)
+    if message.from_user.id not in new_users:
+        return
+    new_users.remove(message.from_user.id)
 
     try:
         await bot.delete_message(message.chat.id, message.reply_to_message.id)
@@ -383,7 +292,7 @@ async def handle_captcha_response(message):
     if message.text not in correct_answers:
         goodbye_msg = await send_message(
             message.chat.id,
-            f"❌ <b>Incorrect answer, @{message.from_user.username}</b>\n\n"
+            f"❌ <b>Incorrect answer, {mention(message.from_user)}</b>\n\n"
             f"🚪 <i>Please try again when you're ready to join our community!</i>"
         )
         await asyncio.sleep(2)
@@ -396,6 +305,7 @@ async def handle_captcha_response(message):
 
     await welcome_new_users(message, [message.from_user])
 
+
 async def kick_user(chat_id, user):
     """Kicks a user from the chat."""
     try:
@@ -404,32 +314,24 @@ async def kick_user(chat_id, user):
     except Exception as e:
         logger.error(f"Failed to kick user {user.username}: {e}")
 
+
 async def welcome_new_users(message, users):
     """Sends a welcome message to verified new users."""
-    usernames = [f'@{user.username}' if user.username else f'User{user.id}' for user in users]
+    usernames = [mention(user) for user in users]
     if len(usernames) > 1:
         usernames[-1] = 'and ' + usernames[-1]
     username_list = ', '.join(usernames) if len(usernames) > 2 else ' '.join(usernames)
 
-    help_text = f"""🎉 <b>Welcome {username_list}!</b>
-
-🔥 <b>Quick Commands:</b>
-/claim - Token claiming info
-/price - Price discussion rules  
-/supply - Token supply info
-/mana - Learn about Mana
-/roadmap - Development roadmap
-/rules - Community guidelines
-
-💫 <i>Choose an option below to get started!</i>"""
+    help_text = TEXTS['welcome'].replace('{usernames}', username_list)
 
     sent_message = await send_message(
         message.chat.id,
-        help_text, 
+        help_text,
         reply_markup=create_main_menu_keyboard()
     )
     if sent_message:
         asyncio.create_task(schedule_message_deletion(sent_message.chat.id, sent_message.message_id))
+
 
 @bot.message_handler(content_types=['left_chat_member'])
 async def delete_leave_message(message):
@@ -444,188 +346,21 @@ async def delete_leave_message(message):
 @bot.callback_query_handler(func=lambda call: True)
 async def handle_callback_query(call):
     """Handles all inline keyboard button presses."""
-    text = ""
     try:
         if call.data == "main_menu":
-            text = """🔮 <b>Welcome to Koinos Bot!</b>
-
-🔥 <b>Quick Commands:</b>
-/claim - Token claiming info
-/price - Price discussion rules  
-/supply - Token supply info
-/mana - Learn about Mana
-/roadmap - Development roadmap
-/rules - Community guidelines
-
-💫 <i>Choose an option below to get started!</i>"""
-            
-        elif call.data == "guides":
-            text = """📚 <b>Koinos Learning Hub</b>
-
-🎓 <b>Official Documentation:</b>
-📖 <a href="https://docs.koinos.io">Complete Koinos Docs</a>
-
-⚡ <b>Core Concepts:</b>
-🔮 <a href="https://docs.koinos.io/overview/mana/">Master Mana Mechanics</a>
-
-💡 <i>Start your Koinos journey with these essential guides!</i>"""
-            
+            text = TEXTS['main_menu']
         elif call.data == "projects":
-            text = """🚀 <b>Koinos Ecosystem Projects</b>
+            text = content.render_projects_overview(PROJECTS)
+        else:
+            text = MENUS.get(call.data, "")
 
-📱 <b>dApps & Platforms:</b>
-🎨 <a href="https://kollection.app">Kollection</a> - NFT Marketplace
-🏙️ <a href="https://koincity.com">Koincity</a> - Virtual World
-📝 <a href="https://koinosbox.com/nicknames">Nicknames</a> - Name Service
-🖼️ <a href="https://kanvas-app.com">Kanvas</a> - Creative Platform
-🌱 <a href="https://koinosgarden.com">Koinos Garden</a> - DeFi
-
-🎮 <b>Gaming:</b>
-🚀 <a href="https://planetkoinos.com/space_striker.html">Space Striker</a> - Action Game
-
-⛏️ <b>Mining & Staking:</b>
-🔥 <a href="https://fogata.io">Fogata</a> - Mining Pool
-💎 <a href="https://burnkoin.com">Burn Koin</a> - Staking Pool
-
-🔍 <b>Infrastructure:</b>
-📊 <a href="https://koinosblocks.com">KoinosBlocks</a> - Block Explorer
-
-💳 <b>Wallets:</b>
-🦊 <a href="https://chrome.google.com/webstore/detail/kondor/ghipkefkpgkladckmlmdnadmcchefhjl">Kondor</a> - Browser Extension (Suggested)
-🌐 <a href="https://portal.armana.io">Portal</a> - Web Wallet
-👑 <a href="https://sovrano.io/">Sovrano</a> - Wallet Solution (Suggested)
-
-🤖 <b>AI & Tools:</b>
-🧠 <a href="https://planetkoinos.com/koinos_ai.html">Koinos AI</a> - AI Assistant
-
-🌟 <i>The ecosystem is growing daily!</i>"""
-            
-        elif call.data == "exchanges":
-            text = """💱 <b>Trade $KOIN Everywhere</b>
-
-📈 <b>Centralized Exchanges:</b>
-🏪 <a href="https://www.mexc.com/exchange/KOIN_USDT">MEXC</a> - Global Exchange
-⚡ <a href="https://bingx.com/en/spot/KOINUSDT/">BingX</a> - Crypto Trading
-
-🔥 <b>More listings coming soon!</b>
-<i>We're always working on new exchange partnerships</i>
-
-⚠️ <i>Free to request exchanges, but no guarantees on timing!</i>"""
-            
-        elif call.data == "wallets":
-            text = """💳 <b>Secure Your $KOIN</b>
-
-<i>Choose the perfect wallet for your needs:</i>
-
-🦊 <b>Kondor Wallet</b> - <i>Suggested • Active Development</i>
-💻 Browser extension for Chrome & Brave
-👨‍💻 Created by Julian Gonzalez
-🔗 <a href="https://chrome.google.com/webstore/detail/kondor/ghipkefkpgkladckmlmdnadmcchefhjl">Download</a> | <a href="https://github.com/joticajulian/kondor">GitHub</a>
-💝 <a href="https://github.com/sponsors/joticajulian">Support Julian</a>
-
-🌐 <b>Portal Wallet</b> - <i>Web Based</i>
-🖥️ No installation required
-🔗 <a href="https://portal.armana.io">Access Portal</a>
-
-👑 <b>Sovrano Wallet</b> - <i>Suggested • Active Development</i>
-🔗 <a href="https://sovrano.io/">Visit Sovrano</a>
-
-💎 <b>Tangem Wallet</b> - <i>Hardware Security</i>
-🛡️ Physical card wallet
-📱 iOS & Android app support
-⚠️ <i>More secure but limited dApp support</i>
-🔗 <a href="https://tangem.com">Learn More</a>
-
-🔐 <b>Security Tip:</b> <i>Use multiple wallets for different purposes!</i>"""
-            
-        elif call.data == "international":
-            text = """🌍 <b>Global Koinos Community</b>
-
-<i>Connect with Koinos enthusiasts worldwide!</i>
-
-🇩🇪 <a href="https://t.me/koinosgermany">Deutschland</a> - German Community
-🇪🇸 <a href="https://t.me/koinoshispano">España</a> - Spanish Community  
-🇨🇳 <a href="https://t.me/koinos_cn">中国</a> - Chinese Community
-🇮🇹 <a href="https://t.me/+8KIVdg8vhIQ5ZGY0">Italia</a> - Italian Community
-🇮🇷 <a href="https://t.me/PersianKoinos">ایران</a> - Persian Community
-🇹🇷 <a href="https://t.me/+ND37ePjNlvc4NGE0">Türkiye</a> - Turkish Community
-🇷🇺 <a href="https://t.me/koinosnetwork_rus">Россия</a> - Russian Community
-🇳🇱 <a href="https://t.me/KoinosNederland">Nederland</a> - Dutch Community
-
-🌟 <i>Missing your language? Help us create a new community!</i>
-
-🤝 <b>Note:</b> <i>These are unofficial community groups</i>"""
-            
-        elif call.data == "social":
-            text = """📱 <b>Connect With Koinos</b>
-
-🏢 <b>Official Channels:</b>
-🔮 <a href="https://twitter.com/koinosnetwork">Koinos Network</a> - Main Twitter
-🏗️ <a href="https://twitter.com/TheKoinosGroup">Koinos Group</a> - Development Team
-💬 <a href="https://discord.koinos.io">Discord Server</a> - Real-time chat
-📝 <a href="https://medium.com/koinosnetwork">Medium Blog</a> - Deep insights
-📺 <a href="https://www.youtube.com/@KoinosNetwork">YouTube Channel</a> - Video content
-
-⚡ <b>Community Channels:</b>
-📰 <a href="https://koinosnews.com/">Koinos News</a> - Latest updates
-🛠️ <a href="https://www.youtube.com/@motoengineer.koinos">Motoengineer</a> - Tech tutorials
-📢 <a href="https://t.me/KoinosNews">News Telegram</a> - Breaking news
-🚀 <a href="https://t.me/thekoinosarmy">Koinos Army</a> - Price & trading
-
-🌍 <i>Don't forget to check /international for local communities!</i>
-
-💫 <b>Stay updated with the latest from Koinos!</b>"""
-            
-        elif call.data == "stake":
-            text = """🔥 <b>Earn with Koinos Burning</b>
-
-💰 <b>Burn $KOIN for rewards!</b>
-📈 <i>Earn 4-8% APR by burning KOIN for 1 year</i>
-
-📚 <b>Learn the Basics:</b>
-🎥 <a href="https://www.youtube.com/watch?v=v9bhaNLuDms">Koinos Overview: Miners, Holders & Developers</a>
-
-⛏️ <b>Mining Guide:</b>
-🎬 <a href="https://youtu.be/pa2kSYSdVnE?si=kxX4BBbjriL29x6m">How to mine $KOIN with $VHP</a>
-
-🖥️ <b>Run Your Own Node:</b>
-📖 <a href="https://docs.koinos.io/validators/guides/running-a-node/">Node Setup Guide</a>
-
-<b>━━━ OR JOIN A POOL ━━━</b>
-
-🔥 <b>Staking Pools:</b>
-🌋 <a href="https://fogata.io">Fogata</a> - Professional mining pool
-💎 <a href="https://burnkoin.com">Burn Koin</a> - Community pool
-
-⚡ <i>Choose your preferred way to earn with Koinos!</i>"""
-            
-        elif call.data == "whitepaper":
-            text = """📄 <b>Koinos Documentation</b>
-
-📚 <b>Essential Reading:</b>
-📖 <a href="https://koinos.io/whitepaper/">Official Whitepaper</a> - Complete technical spec
-
-🎙️ <b>Audio Content:</b>
-🎧 <a href="https://podcast.thekoinpress.com/episodes/the-koinos-whitepaper">Koin Press Podcast</a> - Whitepaper discussion
-
-📺 <b>Video Explanations:</b>
-▶️ <a href="https://www.youtube.com/watch?v=v-qFFbDvV2c">Community Video</a> - Visual breakdown
-
-🧠 <i>Understanding Koinos starts with the fundamentals!</i>
-
-💡 <b>Key Concepts:</b>
-• Fee-less transactions via Mana
-• Universal Upgradeability  
-• Proof of Burn consensus
-• Developer-friendly environment"""
-        
         if text:
             await bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
-                                          parse_mode='HTML', reply_markup=create_main_menu_keyboard())
-            
+                                        parse_mode='HTML', reply_markup=create_main_menu_keyboard())
+
     except Exception as e:
         logger.error(f"Callback error: {e}")
-    
+
     await bot.answer_callback_query(call.id)
 
 # --- Main Execution ---
