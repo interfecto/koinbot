@@ -1,6 +1,10 @@
 services:
   koinbot:
-    build: .
+    build:
+      context: .
+      # Default bridge on the host resolves PyPI to IPv6-only and has no
+      # IPv6 route; the host network stack has working v4+v6.
+      network: host
     image: koinbot:local
     container_name: koinbot
     restart: unless-stopped
