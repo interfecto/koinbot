@@ -48,19 +48,28 @@ Updates appear in `/updates` (newest first, across all projects) and in
 |---|---|
 | `/info`, `/start`, `/menu` | code (menu from `texts.main_menu`) |
 | `/projects`, `/project <name>`, `/updates` | rendered from `projects.yml` |
+| `/x` | latest original X post from @KoinosNetwork — replies/retweets skipped (Nitter RSS, 10 min cache) |
 | `/report` | code |
 | `/mana`, `/rules`, `/claim`, `/price`, `/supply`, `/vhpsupply`, `/roadmap`, `/website`, `/programs`, ... | `commands.yml` |
 
 ## Running
 
 ```bash
-cp .env.example .env   # set TELEGRAM_BOT_TOKEN (and optional ADMIN_CHAT_ID)
+cp .env.example .env   # set TELEGRAM_BOT_TOKEN (and optional ADMIN_CHAT_ID / MAIN_CHAT_ID)
+mkdir -p state && chown 10001:10001 state   # writable for the container user
 docker compose up -d --build
 ```
 
 The container is hardened: non-root, read-only filesystem, all
 capabilities dropped, memory-limited. The bot uses long polling — no
 inbound ports are required.
+
+With `MAIN_CHAT_ID` set, new X posts from @KoinosNetwork are announced
+in that chat automatically (polled every `X_POLL_SECONDS`, default
+5 min; replies/retweets are skipped; the first run only records a
+baseline so history is never reposted). Nitter is unofficial and may be
+down for stretches — the bot degrades to a profile link and keeps
+retrying.
 
 Validate content locally:
 

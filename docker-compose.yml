@@ -21,6 +21,8 @@ services:
       # Content is mounted so the auto-updater can deploy content-only
       # merges with a plain restart — no image rebuild needed.
       - ./content:/app/content:ro
+      # Only writable path: last-announced X post ID survives restarts.
+      - ./state:/app/state
     logging:
       driver: json-file
       options:

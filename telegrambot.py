@@ -10,6 +10,7 @@ from telebot.async_telebot import AsyncTeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import content
+import xfeed
 
 # Configure logging
 logging.basicConfig(
@@ -31,6 +32,10 @@ new_users_lock = asyncio.Lock()
 CAPTCHA_TIMEOUT = 180  # 3 minutes
 BAN_DURATION_DAYS = 7
 REQUEST_TIMEOUT = 10
+
+# Main group for X auto-posts; unset disables the auto-poster.
+MAIN_CHAT_ID = os.environ.get('MAIN_CHAT_ID', '').strip()
+X_POLL_SECONDS = max(60, int(os.environ.get('X_POLL_SECONDS', '300')))
 
 
 def mention(user):
@@ -219,6 +224,20 @@ async def handle_updates(message):
     await send_message(message.chat.id, content.render_updates(PROJECTS))
 
 
+@bot.message_handler(commands=['x'])
+async def handle_x(message):
+    """Shows the latest X post from @KoinosNetwork."""
+    post = await xfeed.get_latest_cached()
+    if post is None:
+        await send_message(message.chat.id, xfeed.fallback_message(), link_preview=True)
+        return
+    await send_message(
+        message.chat.id,
+        xfeed.format_post(post, f'🐦 <b>Latest post from {xfeed.PROFILE_NAME}</b>'),
+        link_preview=True,
+    )
+
+
 # --- Static commands (defined in content/commands.yml) ---
 
 def _register_content_commands():
@@ -367,6 +386,11 @@ async def handle_callback_query(call):
 
 async def main():
     logger.info("🚀 Koinos Bot starting up...")
+    if MAIN_CHAT_ID:
+        asyncio.create_task(
+            xfeed.autopost_loop(send_message, int(MAIN_CHAT_ID), X_POLL_SECONDS))
+    else:
+        logger.info("MAIN_CHAT_ID not set — X auto-posting disabled")
     try:
         await bot.polling(non_stop=True)
     except (KeyboardInterrupt, SystemExit):
