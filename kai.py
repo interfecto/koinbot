@@ -236,6 +236,18 @@ def _search_url():
     return ''
 
 
+def _clean_snippet_field(value, cap):
+    """One single-line, bracket-free prompt field from untrusted web
+    text — a snippet must not be able to fake the end of the search
+    block (via ']' or newlines) and smuggle text outside it."""
+    if not isinstance(value, str):
+        return ''
+    value = _CONTROL_RE.sub(' ', value)
+    value = re.sub(r'\s+', ' ', value)
+    value = value.replace('[', '(').replace(']', ')')
+    return value.strip()[:cap]
+
+
 def _format_snippets(data):
     """results JSON → prompt lines; snippets are untrusted web text."""
     lines = []
@@ -247,10 +259,8 @@ def _format_snippets(data):
             break
         if not isinstance(r, dict):
             continue
-        title = r.get('title')
-        snippet = r.get('snippet')
-        title = _CONTROL_RE.sub(' ', title).strip()[:150] if isinstance(title, str) else ''
-        snippet = _CONTROL_RE.sub(' ', snippet).strip()[:MAX_SNIPPET_LEN] if isinstance(snippet, str) else ''
+        title = _clean_snippet_field(r.get('title'), 150)
+        snippet = _clean_snippet_field(r.get('snippet'), MAX_SNIPPET_LEN)
         if title or snippet:
             lines.append(f'- {title}: {snippet}')
     return '\n'.join(lines)
@@ -500,24 +510,31 @@ async def ask(question, model=None):
     Returns {'ok': True, 'text': <ready-to-send HTML>} or
     {'ok': False, 'text': <error message HTML>}.
     """
-    search_block = ''
-    if web_search_enabled():
-        search_block = await fetch_search_context(question)
-    payload = {
-        'model': model or default_model(),
-        'messages': [
-            {'role': 'system', 'content': SYSTEM_PROMPT},
-            {'role': 'user', 'content': _compose_user_content(question, search_block)},
-        ],
-        'max_tokens': _env_int('KAI_MAX_TOKENS', 350),
-        'stream': False,
-    }
-    timeout = aiohttp.ClientTimeout(total=_env_int('KAI_TIMEOUT_SECONDS', 120))
+    total_budget = _env_int('KAI_TIMEOUT_SECONDS', 120)
+    started = time.monotonic()
     # The response comes from third-party infrastructure and is fully
     # attacker-controlled: no redirects (SSRF primitive), no compressed
     # bodies (decompression bomb), hard size cap before JSON parsing.
     try:
         async with _sem:
+            # Search runs inside the concurrency budget and shares the
+            # overall deadline — it must not let admitted requests
+            # burn slots outside any inference capacity or extend the
+            # end-to-end time past KAI_TIMEOUT_SECONDS.
+            search_block = ''
+            if web_search_enabled():
+                search_block = await fetch_search_context(question)
+            payload = {
+                'model': model or default_model(),
+                'messages': [
+                    {'role': 'system', 'content': SYSTEM_PROMPT},
+                    {'role': 'user', 'content': _compose_user_content(question, search_block)},
+                ],
+                'max_tokens': _env_int('KAI_MAX_TOKENS', 350),
+                'stream': False,
+            }
+            remaining = max(15, total_budget - (time.monotonic() - started))
+            timeout = aiohttp.ClientTimeout(total=remaining)
             async with aiohttp.ClientSession(
                     timeout=timeout, auto_decompress=False) as session:
                 async with session.post(
