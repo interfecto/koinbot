@@ -228,7 +228,7 @@ def render_models(ids):
         'I answer questions right here in the group. My answers are '
         'computed by the decentralized '
         f'<a href="{KOINOS_AI_URL}">Koinos AI</a> worker network — '
-        'GPUs run by community members, not a central provider.',
+        'hardware run by community members, not a central provider.',
         '',
         '<b>How to use me:</b>',
         '• <code>@kai what is mana?</code> — ask anything',
