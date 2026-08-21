@@ -30,6 +30,11 @@ bot = AsyncTeleBot(os.environ['TELEGRAM_BOT_TOKEN'])
 # captcha. The chat binding stops a pending user from clearing their
 # state by answering the captcha somewhere else (e.g. in a DM).
 new_users = {}
+# Users whose captcha outcome (kick or welcome) is currently being
+# processed. They stay in new_users — and therefore gated — until
+# enforcement has actually succeeded; the claim only prevents the
+# same user from being processed twice concurrently.
+captcha_claimed = set()
 new_users_lock = asyncio.Lock()
 
 # Configuration
@@ -210,16 +215,19 @@ What is the name of this blockchain project?
 
     async with new_users_lock:
         expired = [m for m in message.new_chat_members
-                   if new_users.get(m.id) == current_chat_id]
+                   if new_users.get(m.id) == current_chat_id
+                   and m.id not in captcha_claimed]
         for member in expired:
-            del new_users[member.id]
-    # Kick outside the lock — kick_user awaits the Telegram API. If a
-    # kick fails, the user goes back to pending (still gated) instead
-    # of being silently treated as verified.
+            captcha_claimed.add(member.id)
+    # Kick outside the lock — kick_user awaits the Telegram API. The
+    # user stays registered (and gated) until the kick has actually
+    # succeeded; on failure they simply remain pending.
     for member in expired:
-        if not await kick_user(current_chat_id, member):
-            async with new_users_lock:
-                new_users[member.id] = current_chat_id
+        kicked = await kick_user(current_chat_id, member)
+        async with new_users_lock:
+            captcha_claimed.discard(member.id)
+            if kicked:
+                new_users.pop(member.id, None)
 
 
 @bot.message_handler(commands=['info', 'start', 'menu'])
@@ -416,14 +424,14 @@ async def handle_kai(message):
 async def handle_captcha_response(message):
     """Handles the user's response to the captcha question."""
     user_id = message.from_user.id
-    # Atomic check-and-remove: a double submission loses this race and
-    # returns here instead of being processed twice. The answer only
-    # counts in the chat whose captcha is pending.
+    # Claim the user without unregistering them: they stay gated while
+    # their outcome is processed, and a double submission returns here
+    # instead of being processed twice. The answer only counts in the
+    # chat whose captcha is pending.
     async with new_users_lock:
-        pending_chat = new_users.get(user_id)
-        if pending_chat != message.chat.id:
+        if new_users.get(user_id) != message.chat.id or user_id in captcha_claimed:
             return
-        del new_users[user_id]
+        captcha_claimed.add(user_id)
 
     try:
         await bot.delete_message(message.chat.id, message.reply_to_message.id)
@@ -443,12 +451,18 @@ async def handle_captcha_response(message):
             await bot.delete_message(goodbye_msg.chat.id, goodbye_msg.message_id)
         except:
             pass
-        if not await kick_user(message.chat.id, message.from_user):
-            # Kick failed — keep the user gated, not silently verified.
-            async with new_users_lock:
-                new_users[user_id] = pending_chat
+        kicked = await kick_user(message.chat.id, message.from_user)
+        async with new_users_lock:
+            captcha_claimed.discard(user_id)
+            # Unregister only after a successful kick — otherwise the
+            # user stays gated instead of silently verified.
+            if kicked:
+                new_users.pop(user_id, None)
         return
 
+    async with new_users_lock:
+        captcha_claimed.discard(user_id)
+        new_users.pop(user_id, None)
     await welcome_new_users(message, [message.from_user])
 
 

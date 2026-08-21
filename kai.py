@@ -37,14 +37,15 @@ KOINOS_AI_URL = 'https://koinosai.com'
 # word or a longer @mention (so @kaiser and foo@kai.io don't match).
 _TRIGGER_RE = re.compile(r'(?<![\w@])@kai\b', re.IGNORECASE)
 
-# Matches scheme'd URLs AND bare domain-like tokens (evil.com/reset):
-# Telegram auto-links plain-text domains, so those must pass the
-# allowlist too. Version numbers survive (the last label must be
-# alphabetic); the occasional file name like config.yml is an accepted
-# false positive.
+# Matches scheme'd URLs AND bare domain-like tokens (evil.com/reset,
+# Unicode IDNs, bare IPv4): Telegram auto-links all of those in plain
+# text, so they must pass the allowlist too. Version numbers survive
+# (the last label must be letters); the occasional file name like
+# config.yml is an accepted false positive.
 _URL_RE = re.compile(
     r'(?:[a-z][a-z0-9+.-]*://|tg:|www\.|t\.me/)[^\s<>()"\']+'
-    r'|(?<![\w@./])(?:[a-z0-9][a-z0-9-]*\.)+[a-z]{2,24}\b(?::\d{1,5})?(?:/[^\s<>()"\']*)?',
+    r'|(?<![\w@./])(?:[\w-]+\.)+[^\W\d_]{2,24}\b(?::\d{1,5})?(?:/[^\s<>()"\']*)?'
+    r'|(?<![\w./])(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:/[^\s<>()"\']*)?',
     re.IGNORECASE)
 
 # Hosts the model may link to; everything else is stripped from answers.
