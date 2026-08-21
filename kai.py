@@ -120,6 +120,10 @@ MODELS_FAIL_TTL = 60  # after a failed fetch, serve stale/None this long
 # names only — the koinos-network: prefix is always added by us, so a
 # user can never select a local-inference alias on the pod.
 _MODEL_ID_RE = re.compile(r'[A-Za-z0-9._-]{1,64}')
+# Catalog entries that are not selectable network classes: the
+# scheduler rejects both with "Unknown network model class"
+# (koinos-network is the meta alias, dev-tiny a dev artifact).
+_MODEL_ID_DENYLIST = {'koinos-network', 'dev-tiny'}
 
 
 def _env_int(name, default):
@@ -193,7 +197,8 @@ async def list_models():
                 mid = entry.get('id') if isinstance(entry, dict) else None
                 # Only genuine strings — str(None) would smuggle "None"
                 # through the pattern.
-                if isinstance(mid, str) and _MODEL_ID_RE.fullmatch(mid):
+                if (isinstance(mid, str) and _MODEL_ID_RE.fullmatch(mid)
+                        and mid.lower() not in _MODEL_ID_DENYLIST):
                     ids.append(mid)
             ids = list(dict.fromkeys(ids))  # dedupe, keep order
             if not ids:
