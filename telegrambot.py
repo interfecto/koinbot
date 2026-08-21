@@ -126,10 +126,11 @@ async def schedule_message_deletion(chat_id, message_id, delay_seconds=60):
 # means no other handler — commands included — ever runs for an
 # unverified user. It covers media too, or a pending spammer could
 # simply post a photo/sticker with a phishing caption.
-GATED_CONTENT_TYPES = [
-    'text', 'photo', 'video', 'document', 'sticker', 'animation',
-    'audio', 'voice', 'video_note', 'contact', 'location', 'venue',
-    'poll', 'dice', 'game', 'story',
+# Everything a user can post: the library's media list plus the
+# forwardable giveaway types (classified as "service" upstream) and
+# paid media. Unknown names are harmless — they simply never match.
+GATED_CONTENT_TYPES = telebot.util.content_type_media + [
+    'giveaway', 'giveaway_winners', 'paid_media',
 ]
 
 
