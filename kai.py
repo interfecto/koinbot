@@ -37,7 +37,15 @@ KOINOS_AI_URL = 'https://koinosai.com'
 # word or a longer @mention (so @kaiser and foo@kai.io don't match).
 _TRIGGER_RE = re.compile(r'(?<![\w@])@kai\b', re.IGNORECASE)
 
-_URL_RE = re.compile(r'(?:https?://|www\.|t\.me/)[^\s<>()"\']+', re.IGNORECASE)
+# Matches scheme'd URLs AND bare domain-like tokens (evil.com/reset):
+# Telegram auto-links plain-text domains, so those must pass the
+# allowlist too. Version numbers survive (the last label must be
+# alphabetic); the occasional file name like config.yml is an accepted
+# false positive.
+_URL_RE = re.compile(
+    r'(?:[a-z][a-z0-9+.-]*://|www\.|t\.me/)[^\s<>()"\']+'
+    r'|(?<![\w@./])(?:[a-z0-9][a-z0-9-]*\.)+[a-z]{2,24}\b(?:/[^\s<>()"\']*)?',
+    re.IGNORECASE)
 
 # Hosts the model may link to; everything else is stripped from answers.
 ALLOWED_LINK_HOSTS = ('koinos.io', 'koinosai.com', 'koinscan.io')
@@ -82,10 +90,19 @@ QUOTA_TEXT = (
     'minutes.'
 )
 
+BUSY_TEXT = (
+    '🤖 Kai is busy with other questions right now — please try again '
+    'in a moment.'
+)
+
 # Rate-limit state (single asyncio event loop, no locking needed).
 _last_by_user = {}
+_cooldown_notices = {}
 _window = collections.deque()
 _sem = asyncio.Semaphore(2)
+_pending = 0
+_last_quota_notice = 0.0
+MAX_RESPONSE_BYTES = 2_000_000
 
 
 def _env_int(name, default):
@@ -140,6 +157,47 @@ def user_cooldown_remaining(user_id):
     return 0
 
 
+def should_notify_cooldown(user_id):
+    """At most one cooldown notice per user per cooldown period, so a
+    spammer cannot turn the notice itself into a flood."""
+    now = time.monotonic()
+    last = _cooldown_notices.get(user_id)
+    if last is not None and now - last < cooldown_seconds():
+        return False
+    if len(_cooldown_notices) > 2000:
+        cutoff = now - cooldown_seconds()
+        for uid in [u for u, t in _cooldown_notices.items() if t < cutoff]:
+            del _cooldown_notices[uid]
+    _cooldown_notices[user_id] = now
+    return True
+
+
+def quota_notice_allowed():
+    """At most one quota notice per minute, group-wide."""
+    global _last_quota_notice
+    now = time.monotonic()
+    if now - _last_quota_notice < 60:
+        return False
+    _last_quota_notice = now
+    return True
+
+
+def acquire_slot():
+    """Bounded admission: besides the two in-flight upstream calls, at
+    most KAI_MAX_PENDING requests may wait — everyone else is turned
+    away immediately instead of queueing without limit."""
+    global _pending
+    if _pending >= _env_int('KAI_MAX_PENDING', 4):
+        return False
+    _pending += 1
+    return True
+
+
+def release_slot():
+    global _pending
+    _pending = max(0, _pending - 1)
+
+
 def window_allows():
     """Global limiter: at most KAI_WINDOW_LIMIT answers per
     KAI_WINDOW_SECONDS, protecting the free token quota."""
@@ -155,9 +213,16 @@ def window_allows():
 
 
 def _host_allowed(url):
-    host = re.sub(r'^[a-z+]+://', '', url.lower())
+    # Backslashes and userinfo let the apparent host differ from what
+    # clients actually resolve (https://evil.com\.koinos.io/...) —
+    # reject them outright instead of trying to parse like a browser.
+    if '\\' in url or '@' in url:
+        return False
+    host = re.sub(r'^[a-z][a-z0-9+.-]*://', '', url.lower())
     host = host.split('/', 1)[0].split('?', 1)[0].split('#', 1)[0]
-    host = host.split('@')[-1].split(':', 1)[0]
+    host = host.split(':', 1)[0]
+    if host.startswith('www.'):
+        host = host[4:]
     return any(host == d or host.endswith('.' + d) for d in ALLOWED_LINK_HOSTS)
 
 
@@ -178,10 +243,13 @@ def sanitize_answer(raw):
 
 
 def format_answer(answer, served):
-    footer = (f'\n\n🤖 <a href="{KOINOS_AI_URL}">Koinos AI</a>'
+    # The attribution leads the message so the first line always marks
+    # the content as AI output — a jailbroken or hostile model cannot
+    # open with "OFFICIAL ANNOUNCEMENT" as the visible first line.
+    header = (f'🤖 <a href="{KOINOS_AI_URL}">Koinos AI</a>'
               f' · {html.escape(served, quote=False)}'
-              f' · AI answers can be wrong')
-    return sanitize_answer(answer) + footer
+              f' · AI answer, can be wrong')
+    return header + '\n\n' + sanitize_answer(answer)
 
 
 async def ask(question):
@@ -200,29 +268,44 @@ async def ask(question):
         'stream': False,
     }
     timeout = aiohttp.ClientTimeout(total=_env_int('KAI_TIMEOUT_SECONDS', 120))
+    # The response comes from third-party infrastructure and is fully
+    # attacker-controlled: no redirects (SSRF primitive), no compressed
+    # bodies (decompression bomb), hard size cap before JSON parsing.
     try:
         async with _sem:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(api_url(), json=payload) as resp:
+            async with aiohttp.ClientSession(
+                    timeout=timeout, auto_decompress=False) as session:
+                async with session.post(
+                        api_url(), json=payload, allow_redirects=False,
+                        headers={'Accept-Encoding': 'identity'}) as resp:
                     status = resp.status
-                    # The response comes from third-party infrastructure:
-                    # cap the size so a hostile upstream cannot OOM the
-                    # container, and parse strictly as JSON.
-                    body = await resp.content.read(2_000_000)
-                    data = json.loads(body.decode('utf-8', 'replace'))
+                    encoding = resp.headers.get('Content-Encoding', '').lower()
+                    if encoding not in ('', 'identity'):
+                        raise RuntimeError(f'unexpected Content-Encoding {encoding!r}')
+                    chunks, total = [], 0
+                    async for chunk in resp.content.iter_chunked(65536):
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > MAX_RESPONSE_BYTES:
+                            raise RuntimeError('response exceeds size cap')
+                    data = json.loads(b''.join(chunks).decode('utf-8', 'replace'))
     except Exception as e:
         logger.warning(f'Kai upstream request failed: {e!r}')
         return {'ok': False, 'text': ERROR_TEXT}
 
     if status in (402, 429):
-        logger.warning(f'Kai quota exhausted (HTTP {status}): {data}')
+        logger.warning(f'Kai quota exhausted (HTTP {status}): {str(data)[:300]}')
         return {'ok': False, 'text': QUOTA_TEXT}
     try:
         answer = data['choices'][0]['message']['content'].strip()
-        served = str(data.get('servedModel') or payload['model'])[:64]
+        served = str(data.get('servedModel') or '')
     except (KeyError, IndexError, TypeError, AttributeError):
         logger.warning(f'Kai upstream error (HTTP {status}): {str(data)[:300]}')
         return {'ok': False, 'text': ERROR_TEXT}
+    if not re.fullmatch(r'[A-Za-z0-9._:-]{1,64}', served):
+        # servedModel is attacker-controlled; anything but a plain
+        # model name falls back to what we asked for.
+        served = payload['model']
     if not answer:
         return {'ok': False, 'text': ERROR_TEXT}
     return {'ok': True, 'text': format_answer(answer, served)}

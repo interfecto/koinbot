@@ -79,11 +79,13 @@ def create_main_menu_keyboard():
     return keyboard
 
 
-async def send_message(chat_id, message, link_preview=False, html=True, reply_markup=None, reply_to=None):
+async def send_message(chat_id, message, link_preview=False, html=True, reply_markup=None, reply_to=None, thread_id=None):
     """Universal message sender that uses the provided chat_id."""
     reply_parameters = None
     if reply_to is not None:
-        # Replying also places the message in the right forum topic.
+        # Replying places the message in the right forum topic;
+        # thread_id keeps it there even if the original is deleted
+        # while we wait (allow_sending_without_reply).
         reply_parameters = telebot.types.ReplyParameters(
             message_id=reply_to, allow_sending_without_reply=True)
     try:
@@ -93,7 +95,8 @@ async def send_message(chat_id, message, link_preview=False, html=True, reply_ma
             parse_mode='HTML' if html else None,
             link_preview_options=telebot.types.LinkPreviewOptions(is_disabled=not link_preview),
             reply_markup=reply_markup,
-            reply_parameters=reply_parameters
+            reply_parameters=reply_parameters,
+            message_thread_id=thread_id
         )
     except Exception as e:
         logger.error(f"Failed to send message to {chat_id}: {e}")
@@ -114,15 +117,30 @@ async def schedule_message_deletion(chat_id, message_id, delay_seconds=60):
 async def handle_welcome(message):
     """Handles new members, presenting them with a captcha."""
     current_chat_id = message.chat.id
+
+    # Register the members as unverified BEFORE any await, so a member
+    # who posts immediately cannot race past the captcha gate.
+    async with new_users_lock:
+        for member in message.new_chat_members:
+            new_users.add(member.id)
+
     try:
         await bot.delete_message(current_chat_id, message.id)
     except:
         pass  # Bot may not have admin rights to delete, proceed anyway
 
-    from_user = await bot.get_chat_member(current_chat_id, message.from_user.id)
+    try:
+        from_user = await bot.get_chat_member(current_chat_id, message.from_user.id)
+        is_admin = from_user.status in ['creator', 'administrator']
+    except Exception as e:
+        logger.warning(f"get_chat_member failed, treating adder as non-admin: {e}")
+        is_admin = False
 
-    # If the new member is an admin or the owner, welcome them directly
-    if from_user.status in ['creator', 'administrator']:
+    # If added by an admin or the owner, welcome them directly
+    if is_admin:
+        async with new_users_lock:
+            for member in message.new_chat_members:
+                new_users.discard(member.id)
         await welcome_new_users(message, message.new_chat_members)
         return
 
@@ -133,19 +151,17 @@ async def handle_welcome(message):
     markup.add(*options)
 
     captcha_messages = []
-    async with new_users_lock:
-        for member in message.new_chat_members:
-            new_users.add(member.id)
-            welcome_text = f"""🎉 <b>Welcome {mention(member)}!</b>
+    for member in message.new_chat_members:
+        welcome_text = f"""🎉 <b>Welcome {mention(member)}!</b>
 
 🛡️ <i>Quick security check:</i>
 What is the name of this blockchain project?
 
 ⏰ <i>You have 3 minutes to respond...</i>"""
 
-            captcha_msg = await send_message(current_chat_id, welcome_text, reply_markup=markup)
-            if captcha_msg:
-                captcha_messages.append(captcha_msg)
+        captcha_msg = await send_message(current_chat_id, welcome_text, reply_markup=markup)
+        if captcha_msg:
+            captcha_messages.append(captcha_msg)
 
     # Wait for the timeout and then clean up
     await asyncio.sleep(CAPTCHA_TIMEOUT)
@@ -156,10 +172,12 @@ What is the name of this blockchain project?
             pass
 
     async with new_users_lock:
-        for member in message.new_chat_members:
-            if member.id in new_users:
-                new_users.remove(member.id)
-                await kick_user(current_chat_id, member)
+        expired = [m for m in message.new_chat_members if m.id in new_users]
+        for member in expired:
+            new_users.remove(member.id)
+    # Kick outside the lock — kick_user awaits the Telegram API.
+    for member in expired:
+        await kick_user(current_chat_id, member)
 
 
 @bot.message_handler(commands=['info', 'start', 'menu'])
@@ -299,39 +317,54 @@ async def handle_kai(message):
     if not kai.enabled():
         return
     chat_id = message.chat.id
+    user_id = message.from_user.id
     if not MAIN_CHAT_ID or str(chat_id) != MAIN_CHAT_ID:
         # Kai is exclusive to the official group; in DMs say where to
-        # find it, everywhere else stay silent.
-        if message.chat.type == 'private':
+        # find it (cooldown-gated so DMs can't farm bot output),
+        # everywhere else stay silent.
+        if message.chat.type == 'private' and kai.user_cooldown_remaining(user_id) == 0:
             await send_message(chat_id, kai.GROUP_ONLY_TEXT)
         return
 
+    thread_id = message.message_thread_id if getattr(message, 'is_topic_message', False) else None
+
+    # Every Kai interaction — including help and error notices —
+    # consumes the per-user cooldown, so no reply path can be spammed.
+    cooldown = kai.user_cooldown_remaining(user_id)
+    if cooldown:
+        if kai.should_notify_cooldown(user_id):
+            notice = await send_message(
+                chat_id,
+                f'🕐 {mention(message.from_user)}, one question per '
+                f'{kai.cooldown_seconds()}s — try again in {cooldown}s.',
+                reply_to=message.message_id, thread_id=thread_id)
+            if notice:
+                asyncio.create_task(schedule_message_deletion(
+                    notice.chat.id, notice.message_id, delay_seconds=8))
+        return
     question = kai.extract_question(message.text)
     if not question:
-        await send_message(chat_id, kai.HELP_TEXT, reply_to=message.message_id)
-        return
-    cooldown = kai.user_cooldown_remaining(message.from_user.id)
-    if cooldown:
-        notice = await send_message(
-            chat_id,
-            f'🕐 {mention(message.from_user)}, one question per '
-            f'{kai.cooldown_seconds()}s — try again in {cooldown}s.',
-            reply_to=message.message_id)
-        if notice:
-            asyncio.create_task(schedule_message_deletion(
-                notice.chat.id, notice.message_id, delay_seconds=8))
+        await send_message(chat_id, kai.HELP_TEXT,
+                           reply_to=message.message_id, thread_id=thread_id)
         return
     if not kai.window_allows():
-        await send_message(chat_id, kai.QUOTA_TEXT, reply_to=message.message_id)
+        if kai.quota_notice_allowed():
+            await send_message(chat_id, kai.QUOTA_TEXT,
+                               reply_to=message.message_id, thread_id=thread_id)
+        return
+    if not kai.acquire_slot():
+        await send_message(chat_id, kai.BUSY_TEXT,
+                           reply_to=message.message_id, thread_id=thread_id)
         return
 
-    thread_id = message.message_thread_id if getattr(message, 'is_topic_message', False) else None
     typing_task = asyncio.create_task(_typing_loop(chat_id, thread_id))
     try:
         result = await kai.ask(question)
     finally:
+        kai.release_slot()
         typing_task.cancel()
-    await send_message(chat_id, result['text'], reply_to=message.message_id)
+    await send_message(chat_id, result['text'],
+                       reply_to=message.message_id, thread_id=thread_id)
 
 
 # --- Security Handler (Must be last text-based handler) ---
@@ -339,36 +372,43 @@ async def handle_kai(message):
 @bot.message_handler(content_types=['text'])
 async def handle_text_messages(message):
     """Handles all text from unverified users, enforcing the captcha."""
+    # Hold the lock only for the membership check — Telegram I/O and
+    # sleeps below must not block every other captcha/Kai request.
     async with new_users_lock:
-        if message.from_user.id in new_users:
-            try:
-                await bot.delete_message(message.chat.id, message.id)
-            except:
-                pass
+        pending = message.from_user.id in new_users
+    if not pending:
+        return
 
-            # If the message is a reply to the captcha, handle it
-            if message.reply_to_message is not None:
-                await handle_captcha_response(message)
-            else:
-                logger.warning(f"User {message.from_user.username} ({message.from_user.id}) tried to send message before completing captcha")
-                warning_msg = await send_message(
-                    message.chat.id,
-                    f"⚠️ <b>{mention(message.from_user)}</b>, please complete the security check first!"
-                )
-                await asyncio.sleep(3)
-                try:
-                    await bot.delete_message(warning_msg.chat.id, warning_msg.message_id)
-                except:
-                    pass
-            return
+    try:
+        await bot.delete_message(message.chat.id, message.id)
+    except:
+        pass
+
+    # If the message is a reply to the captcha, handle it
+    if message.reply_to_message is not None:
+        await handle_captcha_response(message)
+    else:
+        logger.warning(f"User {message.from_user.username} ({message.from_user.id}) tried to send message before completing captcha")
+        warning_msg = await send_message(
+            message.chat.id,
+            f"⚠️ <b>{mention(message.from_user)}</b>, please complete the security check first!"
+        )
+        await asyncio.sleep(3)
+        try:
+            await bot.delete_message(warning_msg.chat.id, warning_msg.message_id)
+        except:
+            pass
 
 # --- Helper Functions ---
 
 async def handle_captcha_response(message):
     """Handles the user's response to the captcha question."""
-    if message.from_user.id not in new_users:
-        return
-    new_users.remove(message.from_user.id)
+    # Atomic check-and-remove: a double submission loses this race and
+    # returns here instead of being processed twice.
+    async with new_users_lock:
+        if message.from_user.id not in new_users:
+            return
+        new_users.remove(message.from_user.id)
 
     try:
         await bot.delete_message(message.chat.id, message.reply_to_message.id)
