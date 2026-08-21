@@ -43,8 +43,8 @@ _TRIGGER_RE = re.compile(r'(?<![\w@])@kai\b', re.IGNORECASE)
 # alphabetic); the occasional file name like config.yml is an accepted
 # false positive.
 _URL_RE = re.compile(
-    r'(?:[a-z][a-z0-9+.-]*://|www\.|t\.me/)[^\s<>()"\']+'
-    r'|(?<![\w@./])(?:[a-z0-9][a-z0-9-]*\.)+[a-z]{2,24}\b(?:/[^\s<>()"\']*)?',
+    r'(?:[a-z][a-z0-9+.-]*://|tg:|www\.|t\.me/)[^\s<>()"\']+'
+    r'|(?<![\w@./])(?:[a-z0-9][a-z0-9-]*\.)+[a-z]{2,24}\b(?::\d{1,5})?(?:/[^\s<>()"\']*)?',
     re.IGNORECASE)
 
 # Hosts the model may link to; everything else is stripped from answers.
@@ -102,6 +102,7 @@ _window = collections.deque()
 _sem = asyncio.Semaphore(2)
 _pending = 0
 _last_quota_notice = 0.0
+_last_busy_notice = 0.0
 MAX_RESPONSE_BYTES = 2_000_000
 
 
@@ -182,6 +183,16 @@ def quota_notice_allowed():
     return True
 
 
+def busy_notice_allowed():
+    """At most one busy notice per 30 s, group-wide."""
+    global _last_busy_notice
+    now = time.monotonic()
+    if now - _last_busy_notice < 30:
+        return False
+    _last_busy_notice = now
+    return True
+
+
 def acquire_slot():
     """Bounded admission: besides the two in-flight upstream calls, at
     most KAI_MAX_PENDING requests may wait — everyone else is turned
@@ -217,6 +228,11 @@ def _host_allowed(url):
     # clients actually resolve (https://evil.com\.koinos.io/...) —
     # reject them outright instead of trying to parse like a browser.
     if '\\' in url or '@' in url:
+        return False
+    # Only hierarchical http(s) may pass — tg:, javascript:, ftp: and
+    # friends (Telegram auto-links tg: deep links) are always rejected.
+    scheme = re.match(r'^([a-z][a-z0-9+.-]*):', url.lower())
+    if scheme and scheme.group(1) not in ('http', 'https'):
         return False
     host = re.sub(r'^[a-z][a-z0-9+.-]*://', '', url.lower())
     host = host.split('/', 1)[0].split('?', 1)[0].split('#', 1)[0]
