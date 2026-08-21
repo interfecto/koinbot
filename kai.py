@@ -111,9 +111,10 @@ _last_busy_notice = 0.0
 MAX_RESPONSE_BYTES = 2_000_000
 
 # Live model list from the gateway's /v1/models, briefly cached.
-_models_cache = {'ts': 0.0, 'ids': None}
+_models_cache = {'ts': 0.0, 'ids': None, 'fail_ts': None}
 _models_lock = asyncio.Lock()
 MODELS_TTL = 300
+MODELS_FAIL_TTL = 60  # after a failed fetch, serve stale/None this long
 # Model ids we accept from the gateway and from users: bare class
 # names only — the koinos-network: prefix is always added by us, so a
 # user can never select a local-inference alias on the pod.
@@ -161,6 +162,10 @@ async def list_models():
         now = time.monotonic()
         if _models_cache['ids'] is not None and now - _models_cache['ts'] < MODELS_TTL:
             return _models_cache['ids']
+        # Negative cache: after a failure, don't let every queued
+        # caller retry the gateway back-to-back.
+        if _models_cache['fail_ts'] is not None and now - _models_cache['fail_ts'] < MODELS_FAIL_TTL:
+            return _models_cache['ids']
         try:
             timeout = aiohttp.ClientTimeout(total=8)
             async with aiohttp.ClientSession(
@@ -173,20 +178,30 @@ async def list_models():
                     encoding = resp.headers.get('Content-Encoding', '').lower()
                     if encoding not in ('', 'identity'):
                         raise RuntimeError(f'unexpected Content-Encoding {encoding!r}')
-                    body = await resp.content.read(200_000)
-                    data = json.loads(body.decode('utf-8', 'replace'))
+                    # Accumulate until EOF — read(n) may return early.
+                    chunks, total = [], 0
+                    async for chunk in resp.content.iter_chunked(65536):
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > 200_000:
+                            raise RuntimeError('model list exceeds size cap')
+                    data = json.loads(b''.join(chunks).decode('utf-8', 'replace'))
             ids = []
-            for entry in (data.get('data') or [])[:50]:
-                mid = str(entry.get('id', ''))
-                if _MODEL_ID_RE.fullmatch(mid):
+            entries = data.get('data') if isinstance(data, dict) else None
+            for entry in (entries or [])[:50]:
+                mid = entry.get('id') if isinstance(entry, dict) else None
+                # Only genuine strings — str(None) would smuggle "None"
+                # through the pattern.
+                if isinstance(mid, str) and _MODEL_ID_RE.fullmatch(mid):
                     ids.append(mid)
-            if ids:
-                _models_cache['ts'] = time.monotonic()
-                _models_cache['ids'] = ids
-            else:
+            if not ids:
                 raise RuntimeError('model list empty')
+            _models_cache['ts'] = time.monotonic()
+            _models_cache['ids'] = ids
+            _models_cache['fail_ts'] = None
         except Exception as e:
             logger.warning(f'Kai model list unavailable: {e!r}')
+            _models_cache['fail_ts'] = time.monotonic()
     return _models_cache['ids']
 
 
