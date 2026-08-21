@@ -27,7 +27,7 @@ DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 # Commands implemented in code; content must not shadow them.
 RESERVED_COMMANDS = {
     'info', 'start', 'menu', 'report',
-    'projects', 'project', 'updates', 'x',
+    'projects', 'project', 'updates', 'x', 'kai',
     'guides', 'docs', 'international', 'exchange', 'exchanges', 'cex',
     'buy', 'media', 'social', 'stake', 'whitepaper', 'wallets',
 }

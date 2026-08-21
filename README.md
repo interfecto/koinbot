@@ -49,6 +49,7 @@ Updates appear in `/updates` (newest first, across all projects) and in
 | `/info`, `/start`, `/menu` | code (menu from `texts.main_menu`) |
 | `/projects`, `/project <name>`, `/updates` | rendered from `projects.yml` |
 | `/x` | latest original X post from @KoinosNetwork — replies/retweets skipped (Nitter RSS, 10 min cache) |
+| `@kai <question>` | AI answer from the [Koinos AI](https://koinosai.com) worker network — main group only, rate-limited, output sanitized (see `kai.py`) |
 | `/report` | code |
 | `/mana`, `/rules`, `/claim`, `/price`, `/supply`, `/vhpsupply`, `/roadmap`, `/website`, `/programs`, ... | `commands.yml` |
 
@@ -70,6 +71,16 @@ in that chat automatically (polled every `X_POLL_SECONDS`, default
 baseline so history is never reposted). Nitter is unofficial and may be
 down for stretches — the bot degrades to a profile link and keeps
 retrying.
+
+With `KAI_API_URL` set (a [Koinos AI](https://koinosai.com) Core
+`/v1/chat/completions` endpoint, e.g. reached over an SSH tunnel),
+mentioning `@kai` in the main group gets an AI answer served by the
+Koinos AI worker network. Questions are forwarded to an anonymous
+third-party worker in plaintext — group messages are public anyway, and
+Kai deliberately answers nowhere else (no DMs). Model output is treated
+as untrusted: fully HTML-escaped, non-allowlisted links removed,
+@-mentions defused, plus per-user cooldown and a global request window
+to protect the free token quota.
 
 Validate content locally:
 

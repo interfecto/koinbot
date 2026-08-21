@@ -10,6 +10,7 @@ from telebot.async_telebot import AsyncTeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import content
+import kai
 import xfeed
 
 # Configure logging
@@ -78,15 +79,21 @@ def create_main_menu_keyboard():
     return keyboard
 
 
-async def send_message(chat_id, message, link_preview=False, html=True, reply_markup=None):
+async def send_message(chat_id, message, link_preview=False, html=True, reply_markup=None, reply_to=None):
     """Universal message sender that uses the provided chat_id."""
+    reply_parameters = None
+    if reply_to is not None:
+        # Replying also places the message in the right forum topic.
+        reply_parameters = telebot.types.ReplyParameters(
+            message_id=reply_to, allow_sending_without_reply=True)
     try:
         return await bot.send_message(
             chat_id,
             message,
             parse_mode='HTML' if html else None,
             link_preview_options=telebot.types.LinkPreviewOptions(is_disabled=not link_preview),
-            reply_markup=reply_markup
+            reply_markup=reply_markup,
+            reply_parameters=reply_parameters
         )
     except Exception as e:
         logger.error(f"Failed to send message to {chat_id}: {e}")
@@ -265,6 +272,68 @@ async def handle_menu_redirects(message):
     await send_info(message)
 
 
+# --- Kai (@kai) — AI assistant via the Koinos AI worker network ---
+
+async def _typing_loop(chat_id, thread_id):
+    """Re-sends the typing indicator while Kai waits on the network;
+    without it the bot looks dead during a cold model load."""
+    while True:
+        try:
+            await bot.send_chat_action(chat_id, 'typing', message_thread_id=thread_id)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.debug(f'typing indicator failed: {e}')
+        await asyncio.sleep(4)
+
+
+@bot.message_handler(func=lambda m: kai.is_trigger(m.text), content_types=['text'])
+async def handle_kai(message):
+    """Answers @kai mentions in the main group via the Koinos AI network."""
+    async with new_users_lock:
+        unverified = message.from_user.id in new_users
+    if unverified:
+        # Captcha first — hand the message to the security handler.
+        await handle_text_messages(message)
+        return
+    if not kai.enabled():
+        return
+    chat_id = message.chat.id
+    if not MAIN_CHAT_ID or str(chat_id) != MAIN_CHAT_ID:
+        # Kai is exclusive to the official group; in DMs say where to
+        # find it, everywhere else stay silent.
+        if message.chat.type == 'private':
+            await send_message(chat_id, kai.GROUP_ONLY_TEXT)
+        return
+
+    question = kai.extract_question(message.text)
+    if not question:
+        await send_message(chat_id, kai.HELP_TEXT, reply_to=message.message_id)
+        return
+    cooldown = kai.user_cooldown_remaining(message.from_user.id)
+    if cooldown:
+        notice = await send_message(
+            chat_id,
+            f'🕐 {mention(message.from_user)}, one question per '
+            f'{kai.cooldown_seconds()}s — try again in {cooldown}s.',
+            reply_to=message.message_id)
+        if notice:
+            asyncio.create_task(schedule_message_deletion(
+                notice.chat.id, notice.message_id, delay_seconds=8))
+        return
+    if not kai.window_allows():
+        await send_message(chat_id, kai.QUOTA_TEXT, reply_to=message.message_id)
+        return
+
+    thread_id = message.message_thread_id if getattr(message, 'is_topic_message', False) else None
+    typing_task = asyncio.create_task(_typing_loop(chat_id, thread_id))
+    try:
+        result = await kai.ask(question)
+    finally:
+        typing_task.cancel()
+    await send_message(chat_id, result['text'], reply_to=message.message_id)
+
+
 # --- Security Handler (Must be last text-based handler) ---
 
 @bot.message_handler(content_types=['text'])
@@ -391,6 +460,10 @@ async def main():
             xfeed.autopost_loop(send_message, int(MAIN_CHAT_ID), X_POLL_SECONDS))
     else:
         logger.info("MAIN_CHAT_ID not set — X auto-posting disabled")
+    if kai.enabled() and MAIN_CHAT_ID:
+        logger.info("Kai (@kai) enabled for the main group")
+    else:
+        logger.info("Kai (@kai) disabled (KAI_API_URL or MAIN_CHAT_ID not set)")
     try:
         await bot.polling(non_stop=True)
     except (KeyboardInterrupt, SystemExit):

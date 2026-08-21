@@ -18,4 +18,4 @@ jobs:
       - name: Validate content files
         run: python content.py
       - name: Syntax-check bot code
-        run: python -m py_compile telegrambot.py content.py xfeed.py
+        run: python -m py_compile telegrambot.py content.py xfeed.py kai.py
