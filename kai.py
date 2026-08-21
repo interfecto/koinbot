@@ -195,6 +195,7 @@ async def list_models():
                 # through the pattern.
                 if isinstance(mid, str) and _MODEL_ID_RE.fullmatch(mid):
                     ids.append(mid)
+            ids = list(dict.fromkeys(ids))  # dedupe, keep order
             if not ids:
                 raise RuntimeError('model list empty')
             _models_cache['ts'] = time.monotonic()
@@ -236,9 +237,17 @@ def render_models(ids):
         '',
         '<b>Available model classes right now:</b>',
     ]
+    # Cap the rendered length: 50 worst-case ids would exceed
+    # Telegram's 4096-char message limit and make the send fail.
+    used = sum(len(l) + 1 for l in lines)
     for mid in ids:
         mark = ' ← default' if mid == default else ''
-        lines.append(f'• <code>{html.escape(mid, quote=False)}</code>{mark}')
+        line = f'• <code>{html.escape(mid, quote=False)}</code>{mark}'
+        if used + len(line) > 3200:
+            lines.append('• …')
+            break
+        lines.append(line)
+        used += len(line) + 1
     lines += [
         '',
         f'<i>One question per {cooldown_seconds()}s per user · '
