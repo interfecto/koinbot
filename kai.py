@@ -42,9 +42,12 @@ _TRIGGER_RE = re.compile(r'(?<![\w@])@kai\b', re.IGNORECASE)
 # text, so they must pass the allowlist too. Version numbers survive
 # (the last label must be letters); the occasional file name like
 # config.yml is an accepted false positive.
+# Domain labels may be nearly anything Telegram links — including
+# emoji/symbol labels like ➡️.ws — so the label class is "no
+# whitespace, no sentence punctuation" rather than \w.
 _URL_RE = re.compile(
     r'(?:[a-z][a-z0-9+.-]*://|tg:|www\.|t\.me/)[^\s<>()"\']+'
-    r'|(?<![\w@./])(?:[\w-]+\.)+[^\W\d_]{2,24}\b(?::\d{1,5})?(?:/[^\s<>()"\']*)?'
+    r'|(?<![\w@./])(?:[^\s<>()"\'.,;:!?@\\/]+\.)+[^\W\d_]{2,24}\b(?::\d{1,5})?(?:/[^\s<>()"\']*)?'
     r'|(?<![\w./])(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:/[^\s<>()"\']*)?',
     re.IGNORECASE)
 

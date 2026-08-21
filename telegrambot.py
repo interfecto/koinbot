@@ -121,14 +121,22 @@ async def schedule_message_deletion(chat_id, message_id, delay_seconds=60):
 
 # --- Main Handlers ---
 
-# The captcha gate MUST be the first registered text handler:
+# The captcha gate MUST be the first registered message handler:
 # pyTelegramBotAPI stops at the first match, so registering it first
 # means no other handler — commands included — ever runs for an
-# unverified user.
+# unverified user. It covers media too, or a pending spammer could
+# simply post a photo/sticker with a phishing caption.
+GATED_CONTENT_TYPES = [
+    'text', 'photo', 'video', 'document', 'sticker', 'animation',
+    'audio', 'voice', 'video_note', 'contact', 'location', 'venue',
+    'poll', 'dice', 'game', 'story',
+]
+
+
 @bot.message_handler(func=lambda m: m.from_user is not None and m.from_user.id in new_users,
-                     content_types=['text'])
+                     content_types=GATED_CONTENT_TYPES)
 async def captcha_gate(message):
-    """Intercepts all text from unverified users, enforcing the captcha."""
+    """Intercepts all messages from unverified users, enforcing the captcha."""
     async with new_users_lock:
         pending = message.from_user.id in new_users
     if not pending:
@@ -139,8 +147,9 @@ async def captcha_gate(message):
     except:
         pass
 
-    # If the message is a reply to the captcha, handle it
-    if message.reply_to_message is not None:
+    # Only a text reply to the captcha counts as an answer attempt —
+    # media replies are ordinary violations.
+    if message.content_type == 'text' and message.reply_to_message is not None:
         await handle_captcha_response(message)
     else:
         logger.warning(f"User {message.from_user.username} ({message.from_user.id}) tried to send message before completing captcha")
