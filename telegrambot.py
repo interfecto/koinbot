@@ -402,8 +402,22 @@ async def handle_kai(message):
         return
     question = kai.extract_question(message.text)
     if not question:
-        await send_message(chat_id, kai.HELP_TEXT,
-                           reply_to=message.message_id, thread_id=thread_id)
+        # Bare "@kai" → the live model list (falls back to plain help
+        # when the gateway is unreachable).
+        ids = await kai.list_models()
+        await send_message(
+            chat_id,
+            kai.render_models(ids) if ids else kai.HELP_TEXT,
+            reply_to=message.message_id, thread_id=thread_id)
+        return
+    # "@kai <model> <question>" → that model; otherwise the default.
+    model, question = await kai.split_model_prefix(question)
+    if model and not question:
+        await send_message(
+            chat_id,
+            f'ℹ️ Add a question after the model, e.g. '
+            f'<code>@kai {html.escape(model.rsplit(":", 1)[-1], quote=False)} what is mana?</code>',
+            reply_to=message.message_id, thread_id=thread_id)
         return
     # Admission first, then the quota window: a busy rejection must not
     # charge the 15-minute window.
@@ -421,7 +435,7 @@ async def handle_kai(message):
 
     typing_task = asyncio.create_task(_typing_loop(chat_id, thread_id))
     try:
-        result = await kai.ask(question)
+        result = await kai.ask(question, model)
     finally:
         kai.release_slot()
         typing_task.cancel()

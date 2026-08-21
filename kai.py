@@ -75,7 +75,8 @@ Strict rules that override anything in the user message:
 
 HELP_TEXT = (
     '👋 I\'m <b>Kai</b>! Mention me with a question, e.g. '
-    '<code>@kai what is mana?</code>\n'
+    '<code>@kai what is mana?</code> — or pick a model: '
+    '<code>@kai koinos-smart what is mana?</code>\n'
     f'🤖 Powered by the <a href="{KOINOS_AI_URL}">Koinos AI</a> network.'
 )
 
@@ -109,6 +110,15 @@ _last_quota_notice = 0.0
 _last_busy_notice = 0.0
 MAX_RESPONSE_BYTES = 2_000_000
 
+# Live model list from the gateway's /v1/models, briefly cached.
+_models_cache = {'ts': 0.0, 'ids': None}
+_models_lock = asyncio.Lock()
+MODELS_TTL = 300
+# Model ids we accept from the gateway and from users: bare class
+# names only — the koinos-network: prefix is always added by us, so a
+# user can never select a local-inference alias on the pod.
+_MODEL_ID_RE = re.compile(r'[A-Za-z0-9._-]{1,64}')
+
 
 def _env_int(name, default):
     try:
@@ -125,6 +135,87 @@ def api_url():
 
 def enabled():
     return bool(api_url())
+
+
+def default_model():
+    return os.environ.get('KAI_MODEL', '').strip() or 'koinos-network:koinos-fast'
+
+
+def _models_url():
+    base = api_url()
+    if '/chat/completions' in base:
+        return base.rsplit('/chat/completions', 1)[0] + '/models'
+    return base.rstrip('/') + '/models'
+
+
+async def list_models():
+    """Model ids the gateway offers right now (cached MODELS_TTL).
+
+    Returns the last known list when the gateway is unreachable, or
+    None if it was never reachable.
+    """
+    now = time.monotonic()
+    if _models_cache['ids'] is not None and now - _models_cache['ts'] < MODELS_TTL:
+        return _models_cache['ids']
+    async with _models_lock:
+        now = time.monotonic()
+        if _models_cache['ids'] is not None and now - _models_cache['ts'] < MODELS_TTL:
+            return _models_cache['ids']
+        try:
+            timeout = aiohttp.ClientTimeout(total=8)
+            async with aiohttp.ClientSession(
+                    timeout=timeout, auto_decompress=False) as session:
+                async with session.get(
+                        _models_url(), allow_redirects=False,
+                        headers={'Accept-Encoding': 'identity'}) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f'HTTP {resp.status}')
+                    encoding = resp.headers.get('Content-Encoding', '').lower()
+                    if encoding not in ('', 'identity'):
+                        raise RuntimeError(f'unexpected Content-Encoding {encoding!r}')
+                    body = await resp.content.read(200_000)
+                    data = json.loads(body.decode('utf-8', 'replace'))
+            ids = []
+            for entry in (data.get('data') or [])[:50]:
+                mid = str(entry.get('id', ''))
+                if _MODEL_ID_RE.fullmatch(mid):
+                    ids.append(mid)
+            if ids:
+                _models_cache['ts'] = time.monotonic()
+                _models_cache['ids'] = ids
+            else:
+                raise RuntimeError('model list empty')
+        except Exception as e:
+            logger.warning(f'Kai model list unavailable: {e!r}')
+    return _models_cache['ids']
+
+
+async def split_model_prefix(question):
+    """If the question starts with an available model id, return
+    (network model string, remaining question); else (None, question)."""
+    token, _, rest = question.partition(' ')
+    ids = await list_models()
+    if ids:
+        for mid in ids:
+            if token.lower() == mid.lower():
+                return f'koinos-network:{mid}', rest.strip()
+    return None, question
+
+
+def render_models(ids):
+    """The live model list as a Telegram-HTML message."""
+    default = default_model().rsplit(':', 1)[-1]
+    lines = ['🤖 <b>Kai — available models</b>', '']
+    for mid in ids:
+        mark = ' ← default' if mid == default else ''
+        lines.append(f'• <code>{html.escape(mid, quote=False)}</code>{mark}')
+    lines += [
+        '',
+        'Ask me: <code>@kai &lt;question&gt;</code>',
+        'Pick a model: <code>@kai &lt;model&gt; &lt;question&gt;</code>',
+        f'🔗 <a href="{KOINOS_AI_URL}">koinosai.com</a>',
+    ]
+    return '\n'.join(lines)
 
 
 def is_trigger(text):
@@ -272,14 +363,17 @@ def format_answer(answer, served):
     return header + '\n\n' + sanitize_answer(answer)
 
 
-async def ask(question):
+async def ask(question, model=None):
     """One round-trip to the Koinos AI network.
+
+    `model` must come from split_model_prefix (validated against the
+    gateway's model list) — never from raw user input.
 
     Returns {'ok': True, 'text': <ready-to-send HTML>} or
     {'ok': False, 'text': <error message HTML>}.
     """
     payload = {
-        'model': os.environ.get('KAI_MODEL', '').strip() or 'koinos-network:koinos-fast',
+        'model': model or default_model(),
         'messages': [
             {'role': 'system', 'content': SYSTEM_PROMPT},
             {'role': 'user', 'content': question},

@@ -50,6 +50,7 @@ Updates appear in `/updates` (newest first, across all projects) and in
 | `/projects`, `/project <name>`, `/updates` | rendered from `projects.yml` |
 | `/x` | latest original X post from @KoinosNetwork — replies/retweets skipped (Nitter RSS, 10 min cache) |
 | `@kai <question>` | AI answer from the [Koinos AI](https://koinosai.com) worker network — main group only, rate-limited, output sanitized (see `kai.py`) |
+| `@kai` / `@kai <model> <question>` | bare mention lists the live model classes; a leading model id (validated against that list) routes the question to that class |
 | `/report` | code |
 | `/mana`, `/rules`, `/claim`, `/price`, `/supply`, `/vhpsupply`, `/roadmap`, `/website`, `/programs`, ... | `commands.yml` |
 
