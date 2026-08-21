@@ -96,6 +96,12 @@ QUOTA_TEXT = (
     'minutes.'
 )
 
+# {model} is filled with a class name from our validated list.
+NO_PROVIDER_TEXT = (
+    '😴 No worker is serving <code>{model}</code> right now — try '
+    'another model (<code>@kai</code> shows the list) or ask again later.'
+)
+
 BUSY_TEXT = (
     '🤖 Kai is busy with other questions right now — please try again '
     'in a moment.'
@@ -453,6 +459,12 @@ async def ask(question, model=None):
     if status in (402, 429):
         logger.warning(f'Kai quota exhausted (HTTP {status}): {str(data)[:300]}')
         return {'ok': False, 'text': QUOTA_TEXT}
+    if status == 503:
+        # Scheduler: no worker currently serves this class — the
+        # network itself is fine, so say what actually happened.
+        logger.warning(f'Kai: no provider for {payload["model"]} (HTTP 503)')
+        cls = html.escape(payload['model'].rsplit(':', 1)[-1], quote=False)
+        return {'ok': False, 'text': NO_PROVIDER_TEXT.format(model=cls)}
     try:
         answer = data['choices'][0]['message']['content'].strip()
         served = str(data.get('servedModel') or '')
