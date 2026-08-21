@@ -77,7 +77,8 @@ HELP_TEXT = (
     '👋 I\'m <b>Kai</b>! Mention me with a question, e.g. '
     '<code>@kai what is mana?</code> — or pick a model: '
     '<code>@kai koinos-smart what is mana?</code>\n'
-    f'🤖 Powered by the <a href="{KOINOS_AI_URL}">Koinos AI</a> network.'
+    f'🤖 My answers come from the decentralized '
+    f'<a href="{KOINOS_AI_URL}">Koinos AI</a> worker network.'
 )
 
 GROUP_ONLY_TEXT = (
@@ -218,17 +219,30 @@ async def split_model_prefix(question):
 
 
 def render_models(ids):
-    """The live model list as a Telegram-HTML message."""
+    """Bare-@kai reply: what Kai is, how to use it, live model list."""
     default = default_model().rsplit(':', 1)[-1]
-    lines = ['🤖 <b>Kai — available models</b>', '']
+    lines = [
+        '🤖 <b>Kai — the Koinos community AI assistant</b>',
+        '',
+        'I answer questions right here in the group. My answers are '
+        'computed by the decentralized '
+        f'<a href="{KOINOS_AI_URL}">Koinos AI</a> worker network — '
+        'GPUs run by community members, not a central provider.',
+        '',
+        '<b>How to use me:</b>',
+        '• <code>@kai what is mana?</code> — ask anything',
+        '• <code>@kai koinos-smart what is mana?</code> — pick a model',
+        '• <code>@kai</code> — show this help',
+        '',
+        '<b>Available model classes right now:</b>',
+    ]
     for mid in ids:
         mark = ' ← default' if mid == default else ''
         lines.append(f'• <code>{html.escape(mid, quote=False)}</code>{mark}')
     lines += [
         '',
-        'Ask me: <code>@kai &lt;question&gt;</code>',
-        'Pick a model: <code>@kai &lt;model&gt; &lt;question&gt;</code>',
-        f'🔗 <a href="{KOINOS_AI_URL}">koinosai.com</a>',
+        f'<i>One question per {cooldown_seconds()}s per user · '
+        'AI answers can be wrong</i>',
     ]
     return '\n'.join(lines)
 
