@@ -111,28 +111,48 @@ def fallback_message():
             f'🔗 <a href="{PROFILE_URL}">{PROFILE_NAME} on X</a>')
 
 
+def _read_feed_file(path):
+    """A host-side curl timer drops the feed here: the public Nitter
+    mirrors fingerprint Python's TLS stack and 403 us regardless of
+    headers, while the host's curl passes. Stale files (fetcher broken)
+    count as unavailable rather than serving old news forever."""
+    st = os.stat(path)
+    max_age = int(os.environ.get('X_FEED_FILE_MAX_AGE', '7200') or 7200)
+    if time.time() - st.st_mtime > max_age:
+        raise RuntimeError('cached feed file is stale')
+    with open(path, 'rb') as f:
+        return f.read(MAX_FEED_BYTES)
+
+
+async def _fetch_http(url):
+    timeout = aiohttp.ClientTimeout(total=FETCH_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        # Some feed mirrors whitelist known RSS-reader agents;
+        # X_FEED_UA lets us present as one without a deploy.
+        ua = os.environ.get('X_FEED_UA', '').strip() or 'Mozilla/5.0 (koinbot)'
+        async with session.get(url, headers={'User-Agent': ua}) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f'HTTP {resp.status}')
+            # read(n) may return a partial chunk — accumulate
+            # until EOF or the size cap.
+            chunks, total = [], 0
+            async for chunk in resp.content.iter_chunked(65536):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= MAX_FEED_BYTES:
+                    break
+            return b''.join(chunks)
+
+
 async def fetch_posts():
     """Fetch and parse the feed. Returns [] when unavailable."""
     last_err = None
     for url in _feed_urls():
         try:
-            timeout = aiohttp.ClientTimeout(total=FETCH_TIMEOUT)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                # Some feed mirrors whitelist known RSS-reader agents;
-                # X_FEED_UA lets us present as one without a deploy.
-                ua = os.environ.get('X_FEED_UA', '').strip() or 'Mozilla/5.0 (koinbot)'
-                async with session.get(url, headers={'User-Agent': ua}) as resp:
-                    if resp.status != 200:
-                        raise RuntimeError(f'HTTP {resp.status}')
-                    # read(n) may return a partial chunk — accumulate
-                    # until EOF or the size cap.
-                    chunks, total = [], 0
-                    async for chunk in resp.content.iter_chunked(65536):
-                        chunks.append(chunk)
-                        total += len(chunk)
-                        if total >= MAX_FEED_BYTES:
-                            break
-                    body = b''.join(chunks)
+            if url.startswith('file://'):
+                body = _read_feed_file(url[len('file://'):])
+            else:
+                body = await _fetch_http(url)
             posts = parse_feed(body.decode('utf-8', 'replace'))
             if posts:
                 return posts
