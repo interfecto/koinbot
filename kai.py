@@ -160,10 +160,13 @@ def local_model():
 
     Grounding is refused for koinos-network models by design (a remote
     worker must never fetch URLs for us), so grounded requests run on
-    the gateway pod's own GPU. Pick a model that is resident there for
-    earning anyway, so no VRAM swap is triggered.
+    the gateway pod's own GPU. Must be a model the pod serves anyway,
+    with a chat template that accepts a system turn — grounding
+    injects the reference as an extra system message, and e.g.
+    gemma3-12b's template rejects that ("roles must alternate").
+    qwen25-14b (ChatML) is served by both pods and accepts it.
     """
-    return os.environ.get('KAI_LOCAL_MODEL', '').strip() or 'gemma3-12b'
+    return os.environ.get('KAI_LOCAL_MODEL', '').strip() or 'qwen25-14b'
 
 
 def ground_enabled():
