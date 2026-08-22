@@ -571,11 +571,15 @@ def _citation_hosts(data):
     hosts = []
     koinos = data.get('koinos') if isinstance(data, dict) else None
     citations = koinos.get('citations') if isinstance(koinos, dict) else None
-    for c in (citations or [])[:10]:
+    if not isinstance(citations, list):
+        citations = []
+    for c in citations[:10]:
         if len(hosts) >= 3:
             break
         url = c.get('url') if isinstance(c, dict) else None
-        if not isinstance(url, str) or '\\' in url:
+        # '@' would let userinfo spoof the displayed host
+        # (https://docs.koinos.io:pw@evil.example) — reject outright.
+        if not isinstance(url, str) or '\\' in url or '@' in url:
             continue
         m = re.match(r'^https?://([a-z0-9.-]{1,60})(?:[:/?#]|$)', url.lower())
         if not m:
@@ -607,62 +611,50 @@ async def _ask_grounded(question, total_budget, started):
         'koinos': {'ground': ground},
     }
     budget = min(_env_int('KAI_GROUND_TIMEOUT', 60),
-                 max(15, total_budget - (time.monotonic() - started)))
+                 max(5, total_budget - (time.monotonic() - started)))
     try:
         status, data = await _post_chat(payload, budget)
+        if status != 200:
+            logger.warning(f'Kai grounded request HTTP {status}: {str(data)[:300]}')
+            return None
+        answer = _extract_answer(data)
+        if not answer:
+            logger.warning('Kai grounded request returned no answer')
+            return None
+        return {'ok': True,
+                'text': format_answer(answer, local_model(), _citation_hosts(data))}
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
+        # Any grounded failure — transport OR parsing — must fall back
+        # to the network path, never surface as a user-facing error.
         logger.warning(f'Kai grounded request failed: {e!r}')
         return None
-    if status != 200:
-        logger.warning(f'Kai grounded request HTTP {status}: {str(data)[:300]}')
-        return None
-    answer = _extract_answer(data)
-    if not answer:
-        logger.warning('Kai grounded request returned no answer')
-        return None
-    return {'ok': True,
-            'text': format_answer(answer, local_model(), _citation_hosts(data))}
 
 
-async def ask(question, model=None):
-    """One answer for a group question.
-
-    `model` must come from split_model_prefix (validated against the
-    gateway's model list) — never from raw user input. Without an
-    explicit model the answer is grounded (web + Koinos docs) on our
-    own Core; grounding failures fall back to the network path with
-    search snippets.
-
-    Returns {'ok': True, 'text': <ready-to-send HTML>} or
-    {'ok': False, 'text': <error message HTML>}.
-    """
-    total_budget = _env_int('KAI_TIMEOUT_SECONDS', 120)
-    started = time.monotonic()
-    try:
-        async with _sem:
-            if model is None and ground_enabled():
-                result = await _ask_grounded(question, total_budget, started)
-                if result is not None:
-                    return result
-            # Network path: search runs inside the concurrency budget
-            # and shares the overall deadline.
-            search_block = ''
-            if web_search_enabled():
-                search_block = await fetch_search_context(question)
-            payload = {
-                'model': model or default_model(),
-                'messages': [
-                    {'role': 'system', 'content': SYSTEM_PROMPT},
-                    {'role': 'user', 'content': _compose_user_content(question, search_block)},
-                ],
-                'max_tokens': _env_int('KAI_MAX_TOKENS', 350),
-                'stream': False,
-            }
-            remaining = max(15, total_budget - (time.monotonic() - started))
-            status, data = await _post_chat(payload, remaining)
-    except Exception as e:
-        logger.warning(f'Kai upstream request failed: {e!r}')
-        return {'ok': False, 'text': ERROR_TEXT}
+async def _answer(question, model, total_budget, started):
+    """Grounded-then-network flow; runs inside _sem under ask()'s
+    hard deadline."""
+    if model is None and ground_enabled():
+        result = await _ask_grounded(question, total_budget, started)
+        if result is not None:
+            return result
+    # Network path: search shares the deadline and is skipped when the
+    # budget is nearly gone.
+    search_block = ''
+    if web_search_enabled() and total_budget - (time.monotonic() - started) > 20:
+        search_block = await fetch_search_context(question)
+    payload = {
+        'model': model or default_model(),
+        'messages': [
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': _compose_user_content(question, search_block)},
+        ],
+        'max_tokens': _env_int('KAI_MAX_TOKENS', 350),
+        'stream': False,
+    }
+    remaining = max(5, total_budget - (time.monotonic() - started))
+    status, data = await _post_chat(payload, remaining)
 
     if status in (402, 429):
         logger.warning(f'Kai quota exhausted (HTTP {status}): {str(data)[:300]}')
@@ -686,3 +678,30 @@ async def ask(question, model=None):
     if not answer:
         return {'ok': False, 'text': ERROR_TEXT}
     return {'ok': True, 'text': format_answer(answer, served)}
+
+
+async def ask(question, model=None):
+    """One answer for a group question.
+
+    `model` must come from split_model_prefix (validated against the
+    gateway's model list) — never from raw user input. Without an
+    explicit model the answer is grounded (web + Koinos docs) on our
+    own Core; grounding failures fall back to the network path with
+    search snippets.
+
+    Returns {'ok': True, 'text': <ready-to-send HTML>} or
+    {'ok': False, 'text': <error message HTML>}.
+    """
+    total_budget = _env_int('KAI_TIMEOUT_SECONDS', 120)
+    started = time.monotonic()
+    try:
+        async with _sem:
+            # Hard end-to-end deadline: semaphore wait, grounding,
+            # search and inference all share KAI_TIMEOUT_SECONDS — the
+            # per-stage minimum floors can never stack past it.
+            remaining = max(1, total_budget - (time.monotonic() - started))
+            return await asyncio.wait_for(
+                _answer(question, model, total_budget, started), remaining)
+    except Exception as e:
+        logger.warning(f'Kai request failed: {e!r}')
+        return {'ok': False, 'text': ERROR_TEXT}
