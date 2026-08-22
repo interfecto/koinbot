@@ -118,7 +118,10 @@ async def fetch_posts():
         try:
             timeout = aiohttp.ClientTimeout(total=FETCH_TIMEOUT)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, headers={'User-Agent': 'Mozilla/5.0 (koinbot)'}) as resp:
+                # Some feed mirrors whitelist known RSS-reader agents;
+                # X_FEED_UA lets us present as one without a deploy.
+                ua = os.environ.get('X_FEED_UA', '').strip() or 'Mozilla/5.0 (koinbot)'
+                async with session.get(url, headers={'User-Agent': ua}) as resp:
                     if resp.status != 200:
                         raise RuntimeError(f'HTTP {resp.status}')
                     # read(n) may return a partial chunk — accumulate
