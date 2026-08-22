@@ -155,6 +155,28 @@ def default_model():
     return os.environ.get('KAI_MODEL', '').strip() or 'koinos-network:koinos-fast'
 
 
+def local_model():
+    """Local model on our own Core used for grounded answers.
+
+    Grounding is refused for koinos-network models by design (a remote
+    worker must never fetch URLs for us), so grounded requests run on
+    the gateway pod's own GPU. Pick a model that is resident there for
+    earning anyway, so no VRAM swap is triggered.
+    """
+    return os.environ.get('KAI_LOCAL_MODEL', '').strip() or 'gemma3-12b'
+
+
+def ground_enabled():
+    return os.environ.get('KAI_GROUND', '1').strip().lower() not in ('0', 'false', 'off')
+
+
+def ground_sources():
+    raw = os.environ.get(
+        'KAI_GROUND_SOURCES',
+        'https://docs.koinos.io/**,https://koinos.io/**')
+    return [s.strip() for s in raw.split(',') if s.strip()][:20]
+
+
 def _models_url():
     base = api_url()
     if '/chat/completions' in base:
@@ -337,11 +359,14 @@ def render_models(ids):
         '',
         '<b>Available model classes right now:</b>',
     ]
+    if ground_enabled():
+        lines[-1] = ('<b>Models</b> — by default I read the web and cite '
+                     'sources; pick a class for a specific network model:')
     # Cap the rendered length: 50 worst-case ids would exceed
     # Telegram's 4096-char message limit and make the send fail.
     used = sum(len(l) + 1 for l in lines)
     for mid in ids:
-        mark = ' ← default' if mid == default else ''
+        mark = ' ← default' if (mid == default and not ground_enabled()) else ''
         line = f'• <code>{html.escape(mid, quote=False)}</code>{mark}'
         if used + len(line) > 3200:
             lines.append('• …')
@@ -491,36 +516,136 @@ def sanitize_answer(raw):
     return html.escape(text, quote=False).strip()
 
 
-def format_answer(answer, served):
+def format_answer(answer, served, source_hosts=None):
     # The attribution leads the message so the first line always marks
     # the content as AI output — a jailbroken or hostile model cannot
     # open with "OFFICIAL ANNOUNCEMENT" as the visible first line.
     header = (f'🤖 <a href="{KOINOS_AI_URL}">Koinos AI</a>'
               f' · {html.escape(served, quote=False)}'
               f' · AI answer, can be wrong')
-    return header + '\n\n' + sanitize_answer(answer)
+    body = header + '\n\n' + sanitize_answer(answer)
+    if source_hosts:
+        # Hosts are validated in _citation_hosts; the zero-width space
+        # after each dot keeps them readable but never auto-linked.
+        shown = ' · '.join(h.replace('.', '.\u200b') for h in source_hosts)
+        body += f'\n\n📚 <i>Sources: {html.escape(shown, quote=False)}</i>'
+    return body
+
+
+async def _post_chat(payload, timeout_seconds):
+    """POST to the chat endpoint with the hostile-upstream protections:
+    no redirects (SSRF primitive), no compressed bodies (decompression
+    bomb), hard size cap before JSON parsing. Returns (status, json);
+    raises on transport problems."""
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    async with aiohttp.ClientSession(
+            timeout=timeout, auto_decompress=False) as session:
+        async with session.post(
+                api_url(), json=payload, allow_redirects=False,
+                headers={'Accept-Encoding': 'identity'}) as resp:
+            status = resp.status
+            encoding = resp.headers.get('Content-Encoding', '').lower()
+            if encoding not in ('', 'identity'):
+                raise RuntimeError(f'unexpected Content-Encoding {encoding!r}')
+            chunks, total = [], 0
+            async for chunk in resp.content.iter_chunked(65536):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > MAX_RESPONSE_BYTES:
+                    raise RuntimeError('response exceeds size cap')
+            return status, json.loads(b''.join(chunks).decode('utf-8', 'replace'))
+
+
+def _extract_answer(data):
+    try:
+        answer = data['choices'][0]['message']['content'].strip()
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None
+    return answer or None
+
+
+def _citation_hosts(data):
+    """Up to 3 display hosts from response.koinos.citations — the URLs
+    are influenced by the pages that were read, so validate strictly
+    and never render them clickable."""
+    hosts = []
+    koinos = data.get('koinos') if isinstance(data, dict) else None
+    citations = koinos.get('citations') if isinstance(koinos, dict) else None
+    for c in (citations or [])[:10]:
+        if len(hosts) >= 3:
+            break
+        url = c.get('url') if isinstance(c, dict) else None
+        if not isinstance(url, str) or '\\' in url:
+            continue
+        m = re.match(r'^https?://([a-z0-9.-]{1,60})(?:[:/?#]|$)', url.lower())
+        if not m:
+            continue
+        host = m.group(1).strip('.')
+        if host.startswith('www.'):
+            host = host[4:]
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+async def _ask_grounded(question, total_budget, started):
+    """Grounded answer from the local model on our own Core (web +
+    doc sources, citations in the reply). Returns a result dict, or
+    None to signal fallback to the network path."""
+    ground = {'web': True}
+    sources = ground_sources()
+    if sources:
+        ground['sources'] = sources
+    payload = {
+        'model': local_model(),
+        'messages': [
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': question},
+        ],
+        'max_tokens': _env_int('KAI_MAX_TOKENS', 350),
+        'stream': False,
+        'koinos': {'ground': ground},
+    }
+    budget = min(_env_int('KAI_GROUND_TIMEOUT', 60),
+                 max(15, total_budget - (time.monotonic() - started)))
+    try:
+        status, data = await _post_chat(payload, budget)
+    except Exception as e:
+        logger.warning(f'Kai grounded request failed: {e!r}')
+        return None
+    if status != 200:
+        logger.warning(f'Kai grounded request HTTP {status}: {str(data)[:300]}')
+        return None
+    answer = _extract_answer(data)
+    if not answer:
+        logger.warning('Kai grounded request returned no answer')
+        return None
+    return {'ok': True,
+            'text': format_answer(answer, local_model(), _citation_hosts(data))}
 
 
 async def ask(question, model=None):
-    """One round-trip to the Koinos AI network.
+    """One answer for a group question.
 
     `model` must come from split_model_prefix (validated against the
-    gateway's model list) — never from raw user input.
+    gateway's model list) — never from raw user input. Without an
+    explicit model the answer is grounded (web + Koinos docs) on our
+    own Core; grounding failures fall back to the network path with
+    search snippets.
 
     Returns {'ok': True, 'text': <ready-to-send HTML>} or
     {'ok': False, 'text': <error message HTML>}.
     """
     total_budget = _env_int('KAI_TIMEOUT_SECONDS', 120)
     started = time.monotonic()
-    # The response comes from third-party infrastructure and is fully
-    # attacker-controlled: no redirects (SSRF primitive), no compressed
-    # bodies (decompression bomb), hard size cap before JSON parsing.
     try:
         async with _sem:
-            # Search runs inside the concurrency budget and shares the
-            # overall deadline — it must not let admitted requests
-            # burn slots outside any inference capacity or extend the
-            # end-to-end time past KAI_TIMEOUT_SECONDS.
+            if model is None and ground_enabled():
+                result = await _ask_grounded(question, total_budget, started)
+                if result is not None:
+                    return result
+            # Network path: search runs inside the concurrency budget
+            # and shares the overall deadline.
             search_block = ''
             if web_search_enabled():
                 search_block = await fetch_search_context(question)
@@ -534,23 +659,7 @@ async def ask(question, model=None):
                 'stream': False,
             }
             remaining = max(15, total_budget - (time.monotonic() - started))
-            timeout = aiohttp.ClientTimeout(total=remaining)
-            async with aiohttp.ClientSession(
-                    timeout=timeout, auto_decompress=False) as session:
-                async with session.post(
-                        api_url(), json=payload, allow_redirects=False,
-                        headers={'Accept-Encoding': 'identity'}) as resp:
-                    status = resp.status
-                    encoding = resp.headers.get('Content-Encoding', '').lower()
-                    if encoding not in ('', 'identity'):
-                        raise RuntimeError(f'unexpected Content-Encoding {encoding!r}')
-                    chunks, total = [], 0
-                    async for chunk in resp.content.iter_chunked(65536):
-                        chunks.append(chunk)
-                        total += len(chunk)
-                        if total > MAX_RESPONSE_BYTES:
-                            raise RuntimeError('response exceeds size cap')
-                    data = json.loads(b''.join(chunks).decode('utf-8', 'replace'))
+            status, data = await _post_chat(payload, remaining)
     except Exception as e:
         logger.warning(f'Kai upstream request failed: {e!r}')
         return {'ok': False, 'text': ERROR_TEXT}
