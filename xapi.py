@@ -276,10 +276,11 @@ def _event_post(event, expect_author):
     """
     if not isinstance(event, dict):
         return None
-    # Frames arrive wrapped in an outer "data" object. Unwrap it before
-    # looking for the envelope fields, but accept the bare shape too:
-    # reading the wrong level here fails silently, relaying nothing
-    # while the connection still looks healthy.
+    # Live frames carry the envelope at the top level — verified against
+    # the running stream on 2026-09-14: event_type, event_uuid, filter,
+    # includes, payload, tag. The docs show it nested under "data", so
+    # both are accepted: reading the wrong level fails silently,
+    # relaying nothing while the connection still looks healthy.
     if 'event_type' not in event and isinstance(event.get('data'), dict):
         event = event['data']
     if event.get('event_type') != 'post.create':
