@@ -28,6 +28,7 @@ from pathlib import Path
 import aiohttp
 
 import links
+import xapi
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ MAX_POST_TEXT = 900
 MAX_POSTS_PER_CYCLE = 3
 
 _ITEM_RE = re.compile(r'<item>(.*?)</item>', re.S)
+_CREATOR_RE = re.compile(r'<dc:creator>(.*?)</dc:creator>', re.S)
 _TITLE_RE = re.compile(r'<title>(.*?)</title>', re.S)
 _LINK_RE = re.compile(r'<link>(.*?)</link>', re.S)
 _DATE_RE = re.compile(r'<pubDate>(.*?)</pubDate>', re.S)
@@ -83,6 +85,17 @@ def parse_feed(text):
         # Nitter prefixes replies with "R to @user:" and retweets with
         # "RT by @user:" — only original posts belong in the feed.
         if tweet_text.startswith(('R to ', 'RT by ')):
+            continue
+        # The mirror is an unauthenticated third party, so the item's
+        # own author is checked rather than assumed. Without this, a
+        # hostile or hijacked mirror could put any account's post — or
+        # an invented one — into a message headed "from @KoinosNetwork".
+        # An item that does not name its author is not relayed.
+        creator_m = _CREATOR_RE.search(item)
+        creator = html.unescape(creator_m.group(1)).strip() if creator_m else ''
+        if creator.lower() != PROFILE_NAME.lower():
+            logger.warning('feed item from %r skipped (expected %s)',
+                           creator[:40], PROFILE_NAME)
             continue
         status_m = _STATUS_RE.search(link_m.group(1))
         if not status_m:
@@ -207,6 +220,19 @@ async def get_latest_cached():
             return _cache['post']
         if _cache['fail_ts'] is not None and now - _cache['fail_ts'] < FAIL_TTL:
             return _cache['post']
+        # The official API is both fresher and more reliable than the
+        # mirror; the mirror stays as the fallback for when it is not
+        # configured or is failing.
+        if xapi.enabled():
+            try:
+                async with aiohttp.ClientSession() as session:
+                    post = await xapi.latest_post(session)
+                if post:
+                    _cache['ts'] = time.monotonic()
+                    _cache['post'] = post
+                    return post
+            except Exception as e:
+                logger.warning(f'X API lookup failed, falling back to RSS: {e}')
         posts = await fetch_posts()
         if posts:
             _cache['ts'] = time.monotonic()
@@ -234,44 +260,155 @@ def _save_state(state):
         tmp.write_text(json.dumps(state))
         tmp.replace(path)
     except Exception as e:
-        logger.warning(f'could not save X feed state: {e}')
+        # Not cosmetic: if this keeps failing, every restart replays
+        # whatever the floor no longer covers.
+        logger.error(f'could not save X feed state: {e}')
 
 
-async def autopost_loop(send_message, chat_id, poll_seconds=300):
-    """Announce new posts in the main chat.
+# How many announced post IDs to remember. This has to outlast the
+# worst realistic gap between a streamed announcement and the sweep
+# that finally moves the floor past it: anything evicted while still
+# above the floor would be announced a second time.
+ANNOUNCED_HISTORY = 1000
 
-    The first run only records a baseline so a (re)deploy never reposts
-    history; duplicates across restarts are prevented by persisting the
-    last announced status ID.
+# Emergency brake. The account posts once or twice a day, so more than
+# a handful of announcements in this window means something upstream is
+# wrong (a replayed stream, a corrupted floor). Publishing that to a
+# public group is worse than going quiet and saying so in the log.
+BURST_LIMIT = 6
+BURST_WINDOW = 900
+
+NEW_POST_HEADER = f'🐦 <b>New post from {PROFILE_NAME}</b>'
+
+
+class Announcer:
+    """The single place where a post becomes a Telegram message.
+
+    Two sources feed it — the X Activity stream (fast, but without a
+    delivery guarantee) and a timeline sweep (complete, but periodic) —
+    so both a duplicate and a gap are realistic. Two pieces of state
+    prevent each:
+
+    `last_posted_id` is a floor: everything at or below it has been
+    swept and needs no further attention. ONLY the sweep may raise it,
+    because only the sweep enumerates a whole range. A stream event says
+    nothing about the posts before it, so letting it raise the floor
+    would step over a post the stream missed while disconnected.
+
+    `announced` is a short history of IDs already sent, which is what
+    lets the sweep re-read posts the stream already delivered (it must,
+    since the floor lags behind) without posting them twice.
     """
-    state = _load_state()
-    logger.info(f'X auto-post loop started (chat {chat_id}, every {poll_seconds}s)')
+
+    def __init__(self, send_message, chat_id):
+        self._send = send_message
+        self._chat_id = chat_id
+        self._lock = asyncio.Lock()
+        state = _load_state()
+        self._floor = state.get('last_posted_id')
+        if not isinstance(self._floor, int):
+            self._floor = None
+        announced = state.get('announced')
+        self._announced = [i for i in announced if isinstance(i, int)] \
+            if isinstance(announced, list) else []
+        self._recent_sends = []
+
+    # --- state -----------------------------------------------------
+    @property
+    def floor(self):
+        """Highest post id known to be handled; the next since_id."""
+        return self._floor
+
+    def seen(self, post_id):
+        return post_id in self._announced or \
+            (self._floor is not None and post_id <= self._floor)
+
+    def _persist(self):
+        _save_state({'last_posted_id': self._floor,
+                     'announced': self._announced[-ANNOUNCED_HISTORY:]})
+
+    def advance_floor(self, post_id):
+        """Mark everything up to post_id as swept."""
+        if self._floor is None or post_id > self._floor:
+            self._floor = post_id
+            self._persist()
+
+    def set_baseline(self, post_id):
+        """First ever run: adopt the current head without announcing it."""
+        if self._floor is None:
+            self._floor = post_id
+            self._persist()
+            logger.info(f'X baseline set to {post_id} (no history replayed)')
+
+    # --- output ----------------------------------------------------
+    async def announce(self, post, header=NEW_POST_HEADER):
+        """Post to the group unless it was already announced.
+
+        Returns True only when Telegram accepted the message, so a
+        failed send is retried by the next sweep instead of being
+        silently dropped.
+        """
+        async with self._lock:
+            if self.seen(post['id']):
+                return False
+            now = time.monotonic()
+            self._recent_sends = [t for t in self._recent_sends
+                                  if now - t < BURST_WINDOW]
+            if len(self._recent_sends) >= BURST_LIMIT:
+                logger.error(
+                    'burst limit hit (%d posts in %ds); holding back %s',
+                    BURST_LIMIT, BURST_WINDOW, post['id'])
+                return False
+            sent = await self._send(self._chat_id, format_post(post, header),
+                                    link_preview=True)
+            if not sent:
+                return False
+            self._recent_sends.append(now)
+            self._announced.append(post['id'])
+            self._announced = self._announced[-ANNOUNCED_HISTORY:]
+            self._persist()
+            # Keep /x in step with what the group just saw, instead of
+            # serving a cached older post for the rest of the TTL.
+            if not _cache['post'] or post['id'] >= _cache['post']['id']:
+                _cache['ts'] = time.monotonic()
+                _cache['post'] = post
+            logger.info(f'announced X post {post["id"]}')
+            return True
+
+
+async def autopost_loop(announcer, poll_seconds=300):
+    """Announce new posts found in the RSS mirror.
+
+    This is the fallback source, used when the official X API is not
+    configured. The first run only records a baseline so a (re)deploy
+    never reposts history; duplicates across restarts and across
+    sources are prevented by the announcer.
+    """
+    logger.info(f'X RSS auto-post loop started (every {poll_seconds}s)')
     while True:
         try:
             posts = await fetch_posts()
             if posts:
                 _cache['ts'] = time.monotonic()
                 _cache['post'] = posts[0]
-                last = state.get('last_posted_id')
-                if last is None:
-                    state['last_posted_id'] = posts[0]['id']
-                    _save_state(state)
+                if announcer.floor is None:
+                    announcer.set_baseline(posts[0]['id'])
                 else:
-                    new_posts = sorted(
-                        (p for p in posts if p['id'] > last),
-                        key=lambda p: p['id'],
-                    )[:MAX_POSTS_PER_CYCLE]
-                    for p in new_posts:
-                        sent = await send_message(
-                            chat_id,
-                            format_post(p, f'🐦 <b>New post from {PROFILE_NAME}</b>'),
-                            link_preview=True,
-                        )
-                        if sent:
-                            state['last_posted_id'] = p['id']
-                            _save_state(state)
-                        else:
+                    sent = 0
+                    # The feed lists a whole page of recent posts, so it
+                    # is authoritative for its range: every id walked
+                    # here may raise the floor, whether it was announced
+                    # now, announced earlier, or skipped as a duplicate.
+                    for p in sorted(posts, key=lambda p: p['id']):
+                        if announcer.seen(p['id']):
+                            announcer.advance_floor(p['id'])
+                            continue
+                        if sent >= MAX_POSTS_PER_CYCLE:
+                            break
+                        if not await announcer.announce(p):
                             break  # sending failed; retry this post next cycle
+                        announcer.advance_floor(p['id'])
+                        sent += 1
         except Exception as e:
             logger.error(f'X autopost loop error: {e}')
         await asyncio.sleep(poll_seconds)

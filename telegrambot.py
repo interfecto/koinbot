@@ -13,6 +13,7 @@ import content
 import kai
 import links
 import price
+import xapi
 import xfeed
 
 # Configure logging
@@ -53,7 +54,15 @@ REQUEST_TIMEOUT = 10
 
 # Main group for X auto-posts; unset disables the auto-poster.
 MAIN_CHAT_ID = os.environ.get('MAIN_CHAT_ID', '').strip()
+# Private chat that gets operational alerts (already used by the
+# deploy updater); unset simply means no alert is sent.
+ADMIN_CHAT_ID = os.environ.get('ADMIN_CHAT_ID', '').strip()
 X_POLL_SECONDS = max(60, int(os.environ.get('X_POLL_SECONDS', '300')))
+# How often the official-API path re-checks the timeline for posts the
+# push stream did not deliver. Kept separate from the RSS interval: a
+# sweep that finds nothing new is not billed, so it can run far more
+# often than the mirror could be polled.
+X_RECONCILE_SECONDS = max(30, int(os.environ.get('X_RECONCILE_SECONDS', '60')))
 
 
 def mention(user):
@@ -622,8 +631,39 @@ async def handle_callback_query(call):
 async def main():
     logger.info("🚀 Koinos Bot starting up...")
     if MAIN_CHAT_ID:
-        asyncio.create_task(
-            xfeed.autopost_loop(send_message, int(MAIN_CHAT_ID), X_POLL_SECONDS))
+        # One announcer for every source, so a post delivered by both
+        # the push stream and the timeline sweep is published once.
+        announcer = xfeed.Announcer(send_message, int(MAIN_CHAT_ID))
+        if xapi.enabled():
+            async def on_api_stalled(failures):
+                """The API has been failing long enough to be unusable.
+
+                An expired token, spent credits or a revoked app would
+                otherwise leave the group silent with only a log line to
+                show for it. Fall back to the RSS mirror — the source
+                this bot ran on until now — and say so out loud. The
+                announcer is shared, so nothing gets posted twice if the
+                API recovers afterwards.
+                """
+                logger.error("X API unusable after %d sweeps — falling back to RSS",
+                             failures)
+                asyncio.create_task(xfeed.autopost_loop(announcer, X_POLL_SECONDS))
+                if ADMIN_CHAT_ID:
+                    await send_message(
+                        ADMIN_CHAT_ID,
+                        '⚠️ X API is failing (token, credits or subscription). '
+                        'Falling back to the RSS mirror; posts will be slower.')
+
+            asyncio.create_task(xapi.stream_loop(announcer.announce))
+            asyncio.create_task(xapi.poll_loop(announcer, X_RECONCILE_SECONDS,
+                                               on_stalled=on_api_stalled))
+            logger.info(
+                "X source: official API — activity stream, %ss reconciliation",
+                X_RECONCILE_SECONDS)
+        else:
+            asyncio.create_task(xfeed.autopost_loop(announcer, X_POLL_SECONDS))
+            logger.info(
+                "X source: RSS mirror (set X_BEARER_TOKEN + X_USER_ID for the API)")
     else:
         logger.info("MAIN_CHAT_ID not set — X auto-posting disabled")
     if kai.enabled() and MAIN_CHAT_ID:

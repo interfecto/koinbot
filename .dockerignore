@@ -1,0 +1,12 @@
+# The build context is sent to the Docker daemon in full. .env holds the
+# bot token and the X bearer token and must never be part of it, even
+# though the Dockerfile copies an explicit file list and would not
+# include it anyway.
+.env
+.env.*
+!.env.example
+venv
+__pycache__
+.git
+state
+feed
